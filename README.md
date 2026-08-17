@@ -1,98 +1,288 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# CRM Inteligente EYAQ Systems — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API backend para la gestión de usuarios, autenticación, sesiones y roles del CRM Inteligente de EYAQ Systems.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Actualmente el proyecto cubre el Sprint 1: usuarios, acceso y autorización basada en roles.
 
-## Description
+## Tecnologías
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- NestJS
+- TypeScript
+- PostgreSQL
+- Prisma ORM
+- JWT y Passport
+- bcrypt
+- class-validator
+- Jest
 
-## Project setup
+## Funcionalidades
+
+### Autenticación
+
+- Inicio de sesión.
+- Access tokens JWT.
+- Refresh tokens con rotación.
+- Refresh tokens almacenados mediante hash SHA-256.
+- Sesiones persistidas en PostgreSQL.
+- Revocación de sesiones y cierre de sesión.
+- Invalidación de access tokens asociados a sesiones revocadas.
+- Validación de usuarios activos.
+
+### Roles y autorización
+
+Roles disponibles:
+
+- `ADMIN`
+- `OWNER`
+- `OPERATOR`
+- `SUPPORT`
+
+La autorización se implementa mediante:
+
+- `AccessTokenGuard`
+- `RolesGuard`
+- Decorador `@Roles(...)`
+- Enum `RoleCode` generado por Prisma
+
+### Gestión administrativa de usuarios
+
+Los usuarios con rol `ADMIN` pueden:
+
+- Crear usuarios.
+- Listar y consultar usuarios.
+- Editar información general.
+- Activar o desactivar usuarios.
+- Asignar o reemplazar roles.
+- Revocar sesiones al desactivar un usuario.
+
+La implementación también controla emails duplicados, evita exponer `passwordHash` y protege al último administrador activo.
+
+## Requisitos
+
+- Node.js
+- npm
+- PostgreSQL
+
+## Configuración
+
+Copia el archivo de ejemplo:
 
 ```bash
-$ npm install
+cp .env.example .env
 ```
 
-## Compile and run the project
+En Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Variables necesarias:
+
+```env
+PORT=3000
+
+DATABASE_URL="postgresql://usuario:password@localhost:5432/crm_eyaq"
+
+JWT_SECRET="reemplazar-por-un-secreto-seguro"
+JWT_EXPIRES_IN="15m"
+
+JWT_REFRESH_SECRET="reemplazar-por-otro-secreto-seguro"
+JWT_REFRESH_EXPIRES_IN="7d"
+
+ADMIN_EMAIL="admin@eyaq.systems"
+ADMIN_PASSWORD="reemplazar-por-una-password-segura"
+```
+
+Nunca subas el archivo `.env`, credenciales, tokens o cadenas de conexión reales al repositorio.
+
+## Instalación
+
+Instala las dependencias:
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
 ```
 
-## Run tests
+Genera Prisma Client:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npx prisma generate
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Aplica las migraciones en desarrollo:
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npx prisma migrate dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Crea los roles y el administrador inicial:
 
-## Resources
+```bash
+npx prisma db seed
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+El seed utiliza operaciones idempotentes para evitar duplicar roles, usuarios o relaciones. Configura una contraseña administrativa segura antes de ejecutarlo.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## Ejecución
 
-## Support
+Desarrollo:
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+npm run start:dev
+```
 
-## Stay in touch
+Build:
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```bash
+npm run build
+```
 
-## License
+La API utiliza por defecto:
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```text
+http://localhost:3000
+```
+
+## Endpoints
+
+### Autenticación
+
+| Método | Ruta            | Descripción                    |
+| ------ | --------------- | ------------------------------ |
+| POST   | `/auth/login`   | Iniciar sesión                 |
+| POST   | `/auth/refresh` | Renovar tokens                 |
+| GET    | `/auth/me`      | Obtener el usuario autenticado |
+| POST   | `/auth/logout`  | Revocar la sesión actual       |
+
+### Usuarios
+
+Todos los endpoints requieren un access token válido y el rol `ADMIN`.
+
+| Método | Ruta                | Descripción                  |
+| ------ | ------------------- | ---------------------------- |
+| POST   | `/users`            | Crear usuario                |
+| GET    | `/users`            | Listar usuarios              |
+| GET    | `/users/:id`        | Consultar usuario            |
+| PATCH  | `/users/:id`        | Editar información general   |
+| PATCH  | `/users/:id/status` | Activar o desactivar usuario |
+| PATCH  | `/users/:id/roles`  | Reemplazar roles             |
+
+## Ejemplo de autenticación
+
+```http
+POST /auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "admin@eyaq.systems",
+  "password": "PASSWORD_CONFIGURADA"
+}
+```
+
+Para consumir rutas protegidas:
+
+```http
+Authorization: Bearer ACCESS_TOKEN
+```
+
+## Ejemplo de creación de usuario
+
+```http
+POST /users
+Authorization: Bearer ACCESS_TOKEN_ADMIN
+Content-Type: application/json
+```
+
+```json
+{
+  "firstName": "Carlos",
+  "lastName": "Quispe",
+  "email": "carlos@restaurant.com",
+  "password": "Password123!",
+  "roles": ["OPERATOR"]
+}
+```
+
+La respuesta no incluye la contraseña ni su hash.
+
+## Seguridad
+
+- Las contraseñas se almacenan con bcrypt y nunca en texto plano.
+- Los refresh tokens se almacenan mediante SHA-256 y son de un solo uso.
+- Las sesiones pueden revocarse.
+- Los roles actuales se verifican desde PostgreSQL.
+- Los DTO rechazan propiedades no declaradas.
+- `passwordHash` nunca se incluye en respuestas administrativas.
+- La autorización se aplica en el backend y no depende del frontend.
+- No es posible desactivar o retirar el rol al último administrador activo.
+- La desactivación de un usuario revoca sus sesiones activas.
+
+## Pruebas
+
+Pruebas focalizadas de roles, DTOs y usuarios:
+
+```bash
+npx jest src/auth/guards/roles.guard.spec.ts src/dto/create-user.dto.spec.ts src/users/users.service.spec.ts --runInBand
+```
+
+Estado actual:
+
+```text
+13 pruebas focalizadas aprobadas
+```
+
+La suite histórica completa contiene pruebas plantilla pendientes de actualizar y problemas de resolución entre Jest y el cliente Prisma generado.
+
+## Estructura principal
+
+```text
+prisma/
+├── migrations/
+├── schema.prisma
+└── seed.ts
+
+src/
+├── auth/
+├── common/
+├── config/
+├── database/
+├── dto/
+├── roles/
+├── strategies/
+├── users/
+├── app.module.ts
+└── main.ts
+```
+
+## Estado del proyecto
+
+Sprint 1:
+
+- [x] Autenticación
+- [x] Refresh tokens
+- [x] Sesiones
+- [x] Logout
+- [x] Roles y autorización
+- [x] Gestión administrativa de usuarios
+- [ ] Auditoría administrativa
+- [ ] Paginación y filtros de usuarios
+- [ ] Recuperación y cambio de contraseña
+
+## Antes de publicar o desplegar
+
+- Verifica que `.env` esté ignorado por Git.
+- Usa secretos diferentes para access y refresh tokens.
+- Configura `ADMIN_PASSWORD` antes de ejecutar el seed.
+- Elimina endpoints temporales de prueba.
+- Corrige las pruebas históricas pendientes.
+- Verifica que el script `start:prod` apunte al artefacto generado por el build.
+- No expongas secretos, hashes ni credenciales mediante endpoints o logs.
+
+## Licencia
+
+Software propietario de EYAQ Systems.
+
+No se permite su distribución, modificación o utilización sin autorización expresa.
