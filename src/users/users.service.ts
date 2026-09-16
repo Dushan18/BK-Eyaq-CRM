@@ -8,13 +8,12 @@ import * as bcrypt from 'bcrypt';
 
 import type { Prisma } from '../../generated/prisma/client';
 import { RoleCode } from '../../generated/prisma/enums';
+import { PASSWORD_SALT_ROUNDS } from '../common/constants/security.constants';
 import { PrismaService } from '../database/prisma.service';
 import { CreateUserDto } from '../dto/create-user.dto';
 import { UpdateUserDto } from '../dto/update-user.dto';
 import { UpdateUserRolesDto } from '../dto/update-user-roles.dto';
 import { UpdateUserStatusDto } from '../dto/update-user-status.dto';
-
-const PASSWORD_SALT_ROUNDS = 12;
 
 const publicUserSelect = {
   id: true,

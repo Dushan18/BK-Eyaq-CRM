@@ -11,10 +11,20 @@ import { AuthService } from './auth.service';
 import { UsersModule } from '../users/users.module';
 import { SessionsService } from './sessions.service';
 import { RolesGuard } from './guards/roles.guard';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { PasswordResetService } from './password-reset.service';
+import { MailService } from './mail/mail.service';
+import { ResendMailService } from './mail/resend-mail.service';
 
 @Module({
   imports: [
     UsersModule,
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60_000,
+        limit: 10,
+      },
+    ]),
 
     PassportModule.register({
       defaultStrategy: 'jwt',
@@ -27,18 +37,15 @@ import { RolesGuard } from './guards/roles.guard';
       useFactory: (config: ConfigService): JwtModuleOptions => {
         const secret = config.get<string>('JWT_SECRET');
 
-        const expiresIn = config.get<string>(
-          'JWT_EXPIRES_IN',
-        ) as StringValue | undefined;
+        const expiresIn = config.get<string>('JWT_EXPIRES_IN') as
+          StringValue | undefined;
 
         if (!secret) {
           throw new Error('JWT_SECRET no está configurado');
         }
 
         if (!expiresIn) {
-          throw new Error(
-            'JWT_EXPIRES_IN no está configurado',
-          );
+          throw new Error('JWT_EXPIRES_IN no está configurado');
         }
 
         return {
@@ -58,12 +65,13 @@ import { RolesGuard } from './guards/roles.guard';
     AccessTokenStrategy,
     SessionsService,
     RolesGuard,
+    PasswordResetService,
+    {
+      provide: MailService,
+      useClass: ResendMailService,
+    },
   ],
 
-  exports: [
-    JwtModule,
-    PassportModule,
-    RolesGuard,
-  ],
+  exports: [JwtModule, PassportModule, RolesGuard],
 })
 export class AuthModule {}

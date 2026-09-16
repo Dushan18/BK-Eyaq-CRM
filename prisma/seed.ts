@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, RoleCode } from '../generated/prisma/client';
 import * as bcrypt from 'bcrypt';
+import { seedCommercialCatalog } from './seed-commercial-catalog';
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -56,7 +57,8 @@ async function main(): Promise<void> {
     });
 
     const adminEmail =
-        process.env.ADMIN_EMAIL?.trim().toLowerCase() ?? 'admin@eyaq.systems';
+        process.env.ADMIN_EMAIL?.trim().toLowerCase() ??
+        'admin@eyaqsystems.com';
 
     const adminPassword = process.env.ADMIN_PASSWORD ?? 'ChangeMe123!';
 
@@ -69,7 +71,6 @@ async function main(): Promise<void> {
         update: {
             firstName: 'Administrador',
             lastName: 'EYAQ',
-            passwordHash,
             isActive: true,
         },
         create: {
@@ -95,8 +96,11 @@ async function main(): Promise<void> {
         },
     });
 
+    await seedCommercialCatalog(prisma);
+
     console.log('Seed ejecutado correctamente');
     console.log(`Administrador: ${admin.email}`);
+    console.log('Catálogo comercial: 16 categorías y 86 elementos');
 }
 
 main()

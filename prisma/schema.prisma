@@ -4,9 +4,10 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider     = "prisma-client"
-  output       = "../generated/prisma"
-  moduleFormat = "cjs"
+  provider        = "prisma-client"
+  output          = "../generated/prisma"
+  moduleFormat    = "cjs"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -22,6 +23,45 @@ enum RoleCode {
   SUPPORT
 }
 
+enum RestaurantConfigScope {
+  GLOBAL
+}
+
+enum CurrencyCode {
+  PEN
+  USD
+}
+
+enum LanguageCode {
+  ES
+  EN
+  PT
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum CommercialItemType {
+  DISH
+  BEVERAGE
+  SERVICE
+  PROMOTION
+  EVENT
+}
+
+enum CommercialApprovalStatus {
+  DRAFT
+  APPROVED
+  REJECTED
+}
+
 model User {
   id           String    @id @default(uuid())
   firstName    String
@@ -33,8 +73,10 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  roles    UserRole[]
-  sessions Session[]
+  roles                  UserRole[]
+  sessions               Session[]
+  passwordResetTokens    PasswordResetToken[]
+  approvalResponsibleFor RestaurantConfig[]   @relation("RestaurantApprovalResponsible")
 
   @@map("users")
 }
@@ -81,4 +123,289 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
   @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model RestaurantConfig {
+  id                     String                @id @default(uuid())
+  scope                  RestaurantConfigScope @unique @default(GLOBAL)
+  businessName           String                @db.VarChar(150)
+  logoUrl                String?               @db.VarChar(2048)
+  description            String?               @db.Text
+  address                String                @db.VarChar(300)
+  latitude               Decimal?              @db.Decimal(10, 7)
+  longitude              Decimal?              @db.Decimal(10, 7)
+  whatsappNumber         String                @db.VarChar(16)
+  email                  String                @db.VarChar(320)
+  website                String?               @db.VarChar(2048)
+  currency               CurrencyCode          @default(PEN)
+  timeZone               String                @default("America/Lima") @db.VarChar(64)
+  reservationPolicy      String                @db.Text
+  cancellationPolicy     String                @db.Text
+  responseTimeoutMinutes Int
+  approvalResponsibleId  String?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  approvalResponsible User?                @relation("RestaurantApprovalResponsible", fields: [approvalResponsibleId], references: [id], onDelete: SetNull)
+  schedules           RestaurantSchedule[]
+  languages           RestaurantLanguage[]
+
+  @@index([approvalResponsibleId])
+  @@map("restaurant_configs")
+}
+
+model RestaurantSchedule {
+  restaurantConfigId String
+  dayOfWeek          DayOfWeek
+  isOpen             Boolean   @default(false)
+  openTime           String?   @db.VarChar(5)
+  closeTime          String?   @db.VarChar(5)
+
+  restaurantConfig RestaurantConfig @relation(fields: [restaurantConfigId], references: [id], onDelete: Cascade)
+
+  @@id([restaurantConfigId, dayOfWeek])
+  @@map("restaurant_schedules")
+}
+
+model RestaurantLanguage {
+  restaurantConfigId String
+  language           LanguageCode
+
+  restaurantConfig RestaurantConfig @relation(fields: [restaurantConfigId], references: [id], onDelete: Cascade)
+
+  @@id([restaurantConfigId, language])
+  @@map("restaurant_languages")
+}
+
+model CommercialCategory {
+  id               String   @id @default(uuid())
+  sourceKey        String?  @unique @db.VarChar(120)
+  nameEs           String?  @db.VarChar(150)
+  nameEn           String?  @db.VarChar(150)
+  normalizedNameEs String?  @unique @db.VarChar(150)
+  normalizedNameEn String?  @unique @db.VarChar(150)
+  descriptionEs    String?  @db.Text
+  descriptionEn    String?  @db.Text
+  isActive         Boolean  @default(true)
+  displayOrder     Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  items CommercialItem[]
+
+  @@index([isActive, displayOrder])
+  @@map("commercial_categories")
+}
+
+model CommercialItem {
+  customerInterests CustomerInterest[]
+  id                String                   @id @default(uuid())
+  sourceKey         String?                  @unique @db.VarChar(160)
+  type              CommercialItemType
+  categoryId        String
+  nameEs            String?                  @db.VarChar(200)
+  nameEn            String?                  @db.VarChar(200)
+  normalizedName    String                   @db.VarChar(200)
+  descriptionEs     String?                  @db.Text
+  descriptionEn     String?                  @db.Text
+  basePrice         Decimal?                 @db.Decimal(10, 2)
+  displayOrder      Int                      @default(0)
+  isActive          Boolean                  @default(true)
+  approvalStatus    CommercialApprovalStatus @default(DRAFT)
+  conditions        String?                  @db.Text
+  internalNotes     String?                  @db.Text
+  availabilityNote  String?                  @db.Text
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  category        CommercialCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  variants        CommercialItemVariant[]
+  images          CommercialItemImage[]
+  faqs            CommercialItemFaq[]
+  schedules       CommercialItemSchedule[]
+  promotionDetail PromotionDetail?
+  eventDetail     EventDetail?
+
+  @@index([type])
+  @@index([categoryId, displayOrder])
+  @@index([isActive])
+  @@index([approvalStatus, isActive])
+  @@index([createdAt])
+  @@index([normalizedName])
+  @@map("commercial_items")
+}
+
+model CommercialItemVariant {
+  id               String   @id @default(uuid())
+  commercialItemId String
+  nameEs           String?  @db.VarChar(150)
+  nameEn           String?  @db.VarChar(150)
+  normalizedName   String   @db.VarChar(150)
+  descriptionEs    String?  @db.Text
+  descriptionEn    String?  @db.Text
+  price            Decimal  @db.Decimal(10, 2)
+  isActive         Boolean  @default(true)
+  displayOrder     Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  commercialItem CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Cascade)
+
+  @@unique([commercialItemId, normalizedName])
+  @@index([commercialItemId, isActive, displayOrder])
+  @@map("commercial_item_variants")
+}
+
+model CommercialItemImage {
+  id               String   @id @default(uuid())
+  commercialItemId String
+  url              String   @db.VarChar(2048)
+  altTextEs        String?  @db.VarChar(300)
+  altTextEn        String?  @db.VarChar(300)
+  isPrimary        Boolean  @default(false)
+  displayOrder     Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  commercialItem CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Cascade)
+
+  @@unique([commercialItemId, url])
+  @@unique([commercialItemId], map: "commercial_item_images_one_primary_key", where: { isPrimary: true })
+  @@index([commercialItemId, displayOrder])
+  @@map("commercial_item_images")
+}
+
+model CommercialItemFaq {
+  id               String   @id @default(uuid())
+  commercialItemId String
+  questionEs       String   @db.VarChar(500)
+  questionEn       String?  @db.VarChar(500)
+  answerEs         String   @db.Text
+  answerEn         String?  @db.Text
+  displayOrder     Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  commercialItem CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Cascade)
+
+  @@index([commercialItemId, displayOrder])
+  @@map("commercial_item_faqs")
+}
+
+model CommercialItemSchedule {
+  id               String    @id @default(uuid())
+  commercialItemId String
+  dayOfWeek        DayOfWeek
+  isAvailable      Boolean   @default(false)
+  startTime        String?   @db.VarChar(5)
+  endTime          String?   @db.VarChar(5)
+
+  commercialItem CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Cascade)
+
+  @@unique([commercialItemId, dayOfWeek])
+  @@index([commercialItemId])
+  @@map("commercial_item_schedules")
+}
+
+model PromotionDetail {
+  id               String    @id @default(uuid())
+  commercialItemId String    @unique
+  validFrom        DateTime?
+  validUntil       DateTime?
+  promotionalPrice Decimal?  @db.Decimal(10, 2)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  commercialItem CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Cascade)
+
+  @@map("promotion_details")
+}
+
+model EventDetail {
+  id               String    @id @default(uuid())
+  commercialItemId String    @unique
+  startAt          DateTime?
+  endAt            DateTime?
+  capacity         Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  commercialItem CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Cascade)
+
+  @@map("event_details")
+}
+
+enum CustomerStatus {
+  NEW
+  INTERESTED
+  IN_CONVERSATION
+  REQUESTED_RESERVATION
+  CONFIRMED
+  REJECTED
+  LOST
+  RECURRENT
+}
+
+enum ContactChannel {
+  WHATSAPP
+  FACEBOOK
+  INSTAGRAM
+  WEBSITE
+  PHONE
+  EMAIL
+  OTHER
+}
+
+model Customer {
+  id              String             @id @default(uuid())
+  firstName       String?            @db.VarChar(100)
+  lastName        String?            @db.VarChar(100)
+  phone           String?            @db.VarChar(80)
+  phoneCountry    String?            @db.VarChar(2)
+  normalizedPhone String?            @unique @db.VarChar(16)
+  email           String?            @db.VarChar(320)
+  normalizedEmail String?            @unique @db.VarChar(320)
+  sourceChannel   ContactChannel
+  status          CustomerStatus     @default(NEW)
+  firstContactAt  DateTime           @default(now())
+  lastContactAt   DateTime           @default(now())
+  notes           String?            @db.Text
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  interests       CustomerInterest[]
+
+  @@index([status])
+  @@index([sourceChannel])
+  @@index([lastContactAt, id])
+  @@index([createdAt])
+  @@map("customers")
+}
+
+model CustomerInterest {
+  id                String         @id @default(uuid())
+  customerId        String
+  commercialItemId  String
+  firstInterestedAt DateTime       @default(now())
+  lastInterestedAt  DateTime       @default(now())
+  notes             String?        @db.Text
+  customer          Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  commercialItem    CommercialItem @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
+
+  @@unique([customerId, commercialItemId])
+  @@index([commercialItemId])
+  @@map("customer_interests")
 }

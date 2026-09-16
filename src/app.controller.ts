@@ -1,16 +1,12 @@
 import { Controller, Get } from '@nestjs/common';
 import { AppService } from './app.service';
-import { ConfigService } from '@nestjs/config';
 
 @Controller()
 export class AppController {
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly appService: AppService) {}
 
   @Get()
   getHello() {
-    return {
-      //port: this.configService.get('PORT'),
-      jwt: this.configService.get('JWT_SECRET'),
-    };
+    return this.appService.getHello();
   }
 }
