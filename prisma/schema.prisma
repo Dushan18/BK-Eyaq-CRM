@@ -213,25 +213,27 @@ model CommercialCategory {
 }
 
 model CommercialItem {
-  customerInterests CustomerInterest[]
-  id                String                   @id @default(uuid())
-  sourceKey         String?                  @unique @db.VarChar(160)
-  type              CommercialItemType
-  categoryId        String
-  nameEs            String?                  @db.VarChar(200)
-  nameEn            String?                  @db.VarChar(200)
-  normalizedName    String                   @db.VarChar(200)
-  descriptionEs     String?                  @db.Text
-  descriptionEn     String?                  @db.Text
-  basePrice         Decimal?                 @db.Decimal(10, 2)
-  displayOrder      Int                      @default(0)
-  isActive          Boolean                  @default(true)
-  approvalStatus    CommercialApprovalStatus @default(DRAFT)
-  conditions        String?                  @db.Text
-  internalNotes     String?                  @db.Text
-  availabilityNote  String?                  @db.Text
-  createdAt         DateTime                 @default(now())
-  updatedAt         DateTime                 @updatedAt
+  reservationRequests ReservationRequest[]
+  reservations        Reservation[]
+  customerInterests   CustomerInterest[]
+  id                  String                   @id @default(uuid())
+  sourceKey           String?                  @unique @db.VarChar(160)
+  type                CommercialItemType
+  categoryId          String
+  nameEs              String?                  @db.VarChar(200)
+  nameEn              String?                  @db.VarChar(200)
+  normalizedName      String                   @db.VarChar(200)
+  descriptionEs       String?                  @db.Text
+  descriptionEn       String?                  @db.Text
+  basePrice           Decimal?                 @db.Decimal(10, 2)
+  displayOrder        Int                      @default(0)
+  isActive            Boolean                  @default(true)
+  approvalStatus      CommercialApprovalStatus @default(DRAFT)
+  conditions          String?                  @db.Text
+  internalNotes       String?                  @db.Text
+  availabilityNote    String?                  @db.Text
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
 
   category        CommercialCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   variants        CommercialItemVariant[]
@@ -371,22 +373,24 @@ enum ContactChannel {
 }
 
 model Customer {
-  id              String             @id @default(uuid())
-  firstName       String?            @db.VarChar(100)
-  lastName        String?            @db.VarChar(100)
-  phone           String?            @db.VarChar(80)
-  phoneCountry    String?            @db.VarChar(2)
-  normalizedPhone String?            @unique @db.VarChar(16)
-  email           String?            @db.VarChar(320)
-  normalizedEmail String?            @unique @db.VarChar(320)
-  sourceChannel   ContactChannel
-  status          CustomerStatus     @default(NEW)
-  firstContactAt  DateTime           @default(now())
-  lastContactAt   DateTime           @default(now())
-  notes           String?            @db.Text
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-  interests       CustomerInterest[]
+  reservationRequests ReservationRequest[]
+  reservations        Reservation[]
+  id                  String               @id @default(uuid())
+  firstName           String?              @db.VarChar(100)
+  lastName            String?              @db.VarChar(100)
+  phone               String?              @db.VarChar(80)
+  phoneCountry        String?              @db.VarChar(2)
+  normalizedPhone     String?              @unique @db.VarChar(16)
+  email               String?              @db.VarChar(320)
+  normalizedEmail     String?              @unique @db.VarChar(320)
+  sourceChannel       ContactChannel
+  status              CustomerStatus       @default(NEW)
+  firstContactAt      DateTime             @default(now())
+  lastContactAt       DateTime             @default(now())
+  notes               String?              @db.Text
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  interests           CustomerInterest[]
 
   @@index([status])
   @@index([sourceChannel])
@@ -408,4 +412,77 @@ model CustomerInterest {
   @@unique([customerId, commercialItemId])
   @@index([commercialItemId])
   @@map("customer_interests")
+}
+
+enum ReservationRequestStatus {
+  INCOMPLETE_DATA
+  READY_TO_SEND
+  SENT_TO_OWNER
+  WAITING_RESPONSE
+  ACCEPTED
+  REJECTED
+  MODIFICATION_REQUESTED
+  RENEGOTIATING
+  CANCELLED
+}
+
+enum ReservationStatus {
+  CONFIRMED
+  UPCOMING
+  IN_SERVICE
+  COMPLETED
+  RESCHEDULED
+  CANCELLED
+  NO_SHOW
+}
+
+model ReservationRequest {
+  id                  String                   @id @default(uuid())
+  code                String                   @unique @db.VarChar(40)
+  customerId          String
+  commercialItemId    String?
+  sourceChannel       ContactChannel
+  reservationAt       DateTime?                @db.Timestamptz(3)
+  numberOfPeople      Int?
+  quotedPrice         Decimal?                 @db.Decimal(10, 2)
+  currency            CurrencyCode?
+  comments            String?                  @db.Text
+  specialRequirements String?                  @db.Text
+  status              ReservationRequestStatus @default(INCOMPLETE_DATA)
+  createdAt           DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime                 @updatedAt @db.Timestamptz(3)
+  customer            Customer                 @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  commercialItem      CommercialItem?          @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
+  reservation         Reservation?
+
+  @@index([createdAt, id])
+  @@index([status, createdAt])
+  @@index([customerId])
+  @@index([commercialItemId])
+  @@index([sourceChannel])
+  @@index([reservationAt])
+  @@map("reservation_requests")
+}
+
+model Reservation {
+  id                   String              @id @default(uuid())
+  code                 String              @unique @db.VarChar(40)
+  reservationRequestId String?             @unique
+  customerId           String
+  commercialItemId     String?
+  reservationAt        DateTime            @db.Timestamptz(3)
+  numberOfPeople       Int
+  status               ReservationStatus   @default(CONFIRMED)
+  notes                String?             @db.Text
+  createdAt            DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime            @updatedAt @db.Timestamptz(3)
+  reservationRequest   ReservationRequest? @relation(fields: [reservationRequestId], references: [id], onDelete: Restrict)
+  customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  commercialItem       CommercialItem?     @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
+
+  @@index([reservationAt, id])
+  @@index([status, reservationAt])
+  @@index([customerId])
+  @@index([commercialItemId])
+  @@map("reservations")
 }

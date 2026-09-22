@@ -12,6 +12,8 @@ import { RestaurantConfigModule } from './restaurant-config/restaurant-config.mo
 import { HealthModule } from './health/health.module';
 import { CommercialModule } from './commercial/commercial.module';
 import { CustomersModule } from './customers/customers.module';
+import { ReservationRequestsModule } from './reservation-requests/reservation-requests.module';
+import { ReservationsModule } from './reservations/reservations.module';
 
 @Module({
   imports: [
@@ -29,6 +31,8 @@ import { CustomersModule } from './customers/customers.module';
     HealthModule,
     CommercialModule,
     CustomersModule,
+    ReservationRequestsModule,
+    ReservationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

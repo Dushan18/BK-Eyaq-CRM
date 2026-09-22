@@ -506,8 +506,8 @@ npm run test:e2e -- --runInBand
 Estado actual:
 
 ```text
-17 suites y 105 pruebas unitarias aprobadas
-1 suite e2e con 2 pruebas aprobadas
+29 suites y 314 pruebas unitarias aprobadas
+E2E estándar: 2 pruebas; integraciones opt-in: 25 de clientes y 47 de reservas
 ```
 
 ## Estructura principal
@@ -520,11 +520,15 @@ prisma/
 
 src/
 ├── auth/
+├── commercial/
 ├── common/
 ├── config/
+├── customers/
 ├── database/
 ├── dto/
 ├── health/
+├── reservation-requests/
+├── reservations/
 ├── restaurant-config/
 ├── roles/
 ├── strategies/
@@ -572,6 +576,16 @@ El módulo `/customers` permite registrar clientes, buscar y paginar, editar dat
 Incluye normalización de teléfonos y correos, prevención de duplicados y protección frente a solicitudes simultáneas. No implementa conversaciones ni reservas.
 
 Consulta la [guía de Postman y pruebas de clientes](docs/customers-postman.md) para conocer los cuerpos reales, permisos y casos de prueba.
+
+## Solicitudes, reservas y calendario inicial — Sprint 2
+
+`/reservation-requests` registra intenciones de reserva: el backend calcula INCOMPLETE_DATA o READY_TO_SEND y permite cancelar. `/reservations` registra reservas operativas; su creación manual está limitada a ADMIN y no aprueba solicitudes. OWNER consulta; ADMIN/OPERATOR gestionan solicitudes y actualizan reservas. SUPPORT no tiene acceso.
+
+El calendario consume exclusivamente `GET /reservations` con rangos de fecha, paginación y orden cronológico. Las fechas exigen zona explícita; los códigos se generan mediante secuencias PostgreSQL y restricciones únicas. No se implementan todavía disponibilidad de mesas, frontend, aprobación del propietario ni WhatsApp.
+
+La migración `20260916055653_add_reservation_requests_and_reservations` agrega tablas, secuencias, índices y restricciones sin eliminar datos existentes. La configuración global del restaurante debe existir antes de crear solicitudes o reservas.
+
+Consulta la [guía completa de Postman y pruebas de reservas](docs/reservations-postman.md).
 
 ## Licencia
 
