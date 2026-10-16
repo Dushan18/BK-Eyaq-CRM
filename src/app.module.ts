@@ -14,6 +14,8 @@ import { CommercialModule } from './commercial/commercial.module';
 import { CustomersModule } from './customers/customers.module';
 import { ReservationRequestsModule } from './reservation-requests/reservation-requests.module';
 import { ReservationsModule } from './reservations/reservations.module';
+import { MessagingModule } from './messaging/messaging.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -33,6 +35,8 @@ import { ReservationsModule } from './reservations/reservations.module';
     CustomersModule,
     ReservationRequestsModule,
     ReservationsModule,
+    MessagingModule,
+    WhatsAppModule,
   ],
   controllers: [AppController],
   providers: [AppService],

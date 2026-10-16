@@ -16,6 +16,166 @@ datasource db {
 
 // Data Base
 
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  READ
+  UNKNOWN
+  FAILED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  OTHER
+}
+
+enum MessagingOutboxStatus {
+  PENDING
+  PUBLISHED
+  COMPLETED
+  FAILED
+}
+
+model Conversation {
+  id                     String         @id @default(uuid())
+  customerId             String
+  channel                ContactChannel
+  externalConversationId String?        @db.VarChar(255)
+  isAssistantPaused      Boolean        @default(false)
+  assignedUserId         String?
+  lastMessageAt          DateTime?      @db.Timestamptz(3)
+  lastSequence           Int            @default(0)
+  createdAt              DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime       @updatedAt @db.Timestamptz(3)
+  customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  assignedUser           User?          @relation("ConversationAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  messages               Message[]
+
+  @@unique([customerId, channel])
+  // Necesario como destino de FK compuesta para impedir Message.channel distinto.
+  @@unique([id, channel])
+  @@index([channel, lastMessageAt, id])
+  @@index([lastMessageAt, id])
+  @@index([assignedUserId, lastMessageAt, id])
+  @@map("conversations")
+}
+
+model Message {
+  id                 String              @id @default(uuid())
+  conversationId     String
+  channel            ContactChannel
+  sequence           Int
+  externalMessageId  String?             @db.VarChar(255)
+  direction          MessageDirection
+  status             MessageStatus
+  type               MessageType
+  content            String?             @db.Text
+  authorUserId       String?
+  occurredAt         DateTime?           @db.Timestamptz(3)
+  receivedAt         DateTime?           @db.Timestamptz(3)
+  processedAt        DateTime?           @db.Timestamptz(3)
+  sentAt             DateTime?           @db.Timestamptz(3)
+  failedAt           DateTime?           @db.Timestamptz(3)
+  readAt             DateTime?           @db.Timestamptz(3)
+  deliveredAt        DateTime?           @db.Timestamptz(3)
+  providerReadAt     DateTime?           @db.Timestamptz(3)
+  idempotencyKey     String?             @db.VarChar(80)
+  recipientPhone     String?             @db.VarChar(16)
+  providerAccountId  String?             @db.VarChar(80)
+  processingAttempts Int                 @default(0)
+  processingToken    String?             @db.VarChar(36)
+  processingUntil    DateTime?           @db.Timestamptz(3)
+  errorCode          String?             @db.VarChar(80)
+  errorReason        String?             @db.VarChar(300)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+  conversation       Conversation        @relation(fields: [conversationId, channel], references: [id, channel], onDelete: Restrict)
+  author             User?               @relation("MessageAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+  attachments        MessageAttachment[]
+  outbox             MessagingOutbox?
+
+  @@unique([channel, externalMessageId])
+  @@unique([conversationId, sequence])
+  @@unique([conversationId, idempotencyKey])
+  @@index([conversationId, direction, occurredAt])
+  @@index([conversationId, direction, readAt])
+  @@index([status, processingUntil])
+  @@map("messages")
+}
+
+// Normalized delivery receipts only: no raw webhook, tokens or provider error text.
+model MessageStatusEvent {
+  id                String         @id @default(uuid())
+  channel           ContactChannel
+  providerAccountId String         @db.VarChar(80)
+  externalMessageId String         @db.VarChar(255)
+  status            MessageStatus
+  occurredAt        DateTime       @db.Timestamptz(3)
+  processedAt       DateTime?      @db.Timestamptz(3)
+  availableAt       DateTime       @default(now()) @db.Timestamptz(3)
+  createdAt         DateTime       @default(now()) @db.Timestamptz(3)
+
+  @@unique([channel, providerAccountId, externalMessageId, status, occurredAt], map: "message_status_events_dedup_key")
+  @@index([processedAt, availableAt])
+  @@map("message_status_events")
+}
+
+// Quarantine fingerprint for authenticated but malformed events; no content/PII.
+model MessagingWebhookRejection {
+  fingerprint String   @id @db.VarChar(64)
+  code        String   @db.VarChar(80)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@map("messaging_webhook_rejections")
+}
+
+model MessageAttachment {
+  id              String      @id @default(uuid())
+  messageId       String
+  type            MessageType
+  fileName        String?     @db.VarChar(255)
+  mimeType        String?     @db.VarChar(150)
+  sizeBytes       Int?
+  externalMediaId String?     @db.VarChar(255)
+  url             String?     @db.VarChar(2048)
+  createdAt       DateTime    @default(now()) @db.Timestamptz(3)
+  message         Message     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+model MessagingOutbox {
+  id              String                @id @default(uuid())
+  messageId       String                @unique
+  status          MessagingOutboxStatus @default(PENDING)
+  publishAttempts Int                   @default(0)
+  availableAt     DateTime              @default(now()) @db.Timestamptz(3)
+  publishedAt     DateTime?             @db.Timestamptz(3)
+  completedAt     DateTime?             @db.Timestamptz(3)
+  leaseToken      String?               @db.VarChar(36)
+  leaseUntil      DateTime?             @db.Timestamptz(3)
+  lastErrorCode   String?               @db.VarChar(80)
+  createdAt       DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime              @updatedAt @db.Timestamptz(3)
+  message         Message               @relation(fields: [messageId], references: [id], onDelete: Restrict)
+
+  @@index([status, availableAt, leaseUntil])
+  @@map("messaging_outbox")
+}
+
 enum RoleCode {
   ADMIN
   OWNER
@@ -63,15 +223,20 @@ enum CommercialApprovalStatus {
 }
 
 model User {
-  id           String    @id @default(uuid())
-  firstName    String
-  lastName     String
-  email        String    @unique
-  passwordHash String
-  isActive     Boolean   @default(true)
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  assignedConversations  Conversation[]                 @relation("ConversationAssignee")
+  authoredMessages       Message[]                      @relation("MessageAuthor")
+  assignedReservations   Reservation[]                  @relation("ReservationAssignee")
+  reservationNotes       ReservationNote[]              @relation("ReservationNoteAuthor")
+  reservationReschedules ReservationRescheduleHistory[] @relation("ReservationRescheduleAuthor")
+  id                     String                         @id @default(uuid())
+  firstName              String
+  lastName               String
+  email                  String                         @unique
+  passwordHash           String
+  isActive               Boolean                        @default(true)
+  lastLoginAt            DateTime?
+  createdAt              DateTime                       @default(now())
+  updatedAt              DateTime                       @updatedAt
 
   roles                  UserRole[]
   sessions               Session[]
@@ -373,6 +538,7 @@ enum ContactChannel {
 }
 
 model Customer {
+  conversations       Conversation[]
   reservationRequests ReservationRequest[]
   reservations        Reservation[]
   id                  String               @id @default(uuid())
@@ -465,24 +631,59 @@ model ReservationRequest {
 }
 
 model Reservation {
-  id                   String              @id @default(uuid())
-  code                 String              @unique @db.VarChar(40)
-  reservationRequestId String?             @unique
+  assignedUserId       String?
+  assignedUser         User?                          @relation("ReservationAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  noteHistory          ReservationNote[]
+  rescheduleHistory    ReservationRescheduleHistory[]
+  id                   String                         @id @default(uuid())
+  code                 String                         @unique @db.VarChar(40)
+  reservationRequestId String?                        @unique
   customerId           String
   commercialItemId     String?
-  reservationAt        DateTime            @db.Timestamptz(3)
+  reservationAt        DateTime                       @db.Timestamptz(3)
   numberOfPeople       Int
-  status               ReservationStatus   @default(CONFIRMED)
-  notes                String?             @db.Text
-  createdAt            DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt            DateTime            @updatedAt @db.Timestamptz(3)
-  reservationRequest   ReservationRequest? @relation(fields: [reservationRequestId], references: [id], onDelete: Restrict)
-  customer             Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  commercialItem       CommercialItem?     @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
+  status               ReservationStatus              @default(CONFIRMED)
+  notes                String?                        @db.Text
+  createdAt            DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime                       @updatedAt @db.Timestamptz(3)
+  reservationRequest   ReservationRequest?            @relation(fields: [reservationRequestId], references: [id], onDelete: Restrict)
+  customer             Customer                       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  commercialItem       CommercialItem?                @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
 
   @@index([reservationAt, id])
   @@index([status, reservationAt])
   @@index([customerId])
   @@index([commercialItemId])
+  @@index([assignedUserId, reservationAt])
   @@map("reservations")
+}
+
+model ReservationNote {
+  id            String      @id @default(uuid())
+  reservationId String
+  authorUserId  String
+  content       String      @db.VarChar(5000)
+  createdAt     DateTime    @default(now()) @db.Timestamptz(3)
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  author        User        @relation("ReservationNoteAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  @@index([reservationId, createdAt, id])
+  @@index([authorUserId])
+  @@map("reservation_notes")
+}
+
+model ReservationRescheduleHistory {
+  id                    String      @id @default(uuid())
+  reservationId         String
+  previousReservationAt DateTime    @db.Timestamptz(3)
+  newReservationAt      DateTime    @db.Timestamptz(3)
+  reason                String?     @db.VarChar(5000)
+  changedByUserId       String
+  createdAt             DateTime    @default(now()) @db.Timestamptz(3)
+  reservation           Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  changedBy             User        @relation("ReservationRescheduleAuthor", fields: [changedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([reservationId, createdAt, id])
+  @@index([changedByUserId])
+  @@map("reservation_reschedule_history")
 }

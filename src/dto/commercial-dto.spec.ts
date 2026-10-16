@@ -10,6 +10,7 @@ import {
 } from '../../generated/prisma/enums';
 import {
   CreateCommercialCategoryDto,
+  UpdateCommercialCategoryDto,
   UpdateCommercialCategoryStatusDto,
 } from './commercial-category.dto';
 import {
@@ -25,6 +26,33 @@ import {
 } from './commercial-item-resource.dto';
 
 describe('DTOs comerciales', () => {
+  it.each([CreateCommercialCategoryDto, UpdateCommercialCategoryDto])(
+    '%p rechaza displayOrder null pero permite omitirlo',
+    async (Dto) => {
+      expect(
+        await validate(plainToInstance(Dto, { displayOrder: null })),
+      ).not.toHaveLength(0);
+      expect(await validate(plainToInstance(Dto, {}))).toHaveLength(0);
+    },
+  );
+  it.each([{ categoryId: null }, { displayOrder: null }])(
+    'PATCH no acepta campos no anulables: %j',
+    async (body) => {
+      expect(
+        await validate(plainToInstance(UpdateCommercialItemDto, body)),
+      ).not.toHaveLength(0);
+    },
+  );
+  it('limita page al rango técnico sin cambiar su valor predeterminado', async () => {
+    expect(
+      await validate(plainToInstance(CommercialItemQueryDto, { page: 1e30 })),
+    ).not.toHaveLength(0);
+    expect(
+      await validate(
+        plainToInstance(CommercialItemQueryDto, { page: 1_000_000 }),
+      ),
+    ).toHaveLength(0);
+  });
   const categoryId = '11111111-1111-4111-8111-111111111111';
 
   const validItemInput = () => ({

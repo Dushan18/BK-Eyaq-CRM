@@ -506,8 +506,8 @@ npm run test:e2e -- --runInBand
 Estado actual:
 
 ```text
-29 suites y 314 pruebas unitarias aprobadas
-E2E estándar: 2 pruebas; integraciones opt-in: 25 de clientes y 47 de reservas
+30 suites y 334 pruebas unitarias aprobadas
+E2E estándar: 2 pruebas; integraciones opt-in: 25 de clientes y 62 de reservas/calendario
 ```
 
 ## Estructura principal
@@ -586,6 +586,47 @@ El calendario consume exclusivamente `GET /reservations` con rangos de fecha, pa
 La migración `20260916055653_add_reservation_requests_and_reservations` agrega tablas, secuencias, índices y restricciones sin eliminar datos existentes. La configuración global del restaurante debe existir antes de crear solicitudes o reservas.
 
 Consulta la [guía completa de Postman y pruebas de reservas](docs/reservations-postman.md).
+
+La ampliación operativa incorpora responsable, observaciones con autor e historial de reprogramación. Conserva `notes` como texto y agrega `noteHistory`/`rescheduleHistory` al detalle. Nuevas acciones: `/reservations/:id/assignee`, `/notes` y `/reschedule`. El listado añade búsqueda, filtros por responsable/elemento comercial y exclusión opcional de canceladas.
+
+La migración `20260922052135_extend_reservation_calendar` es aditiva. Cambiar realmente la fecha (también mediante el PATCH anterior) ahora registra historial y establece RESCHEDULED. UPCOMING se habilita como estado manual. Consulta las reglas y ejemplos en la [guía operativa del calendario](docs/reservation-calendar-postman.md).
+
+## Cierre técnico del Sprint 2
+
+El [informe de cierre](docs/sprint-2-closure.md) registra el diagnóstico, correcciones de validación del catálogo, matriz de 31 endpoints/RBAC, checklist de requisitos y deuda pendiente. Validación automatizada: 339 pruebas unitarias y 139 de integración, con ambas suites de PostgreSQL habilitadas. Esto no sustituye la aprobación funcional.
+
+La [guía de demo en Postman](docs/sprint-2-demo.md) organiza las evidencias y usa reservas independientes para completar, reprogramar y cancelar. No se añadieron funcionalidades de Sprint 3 ni migraciones en el cierre.
+
+## Mensajería central — Sprint 3, Fase 1
+
+El núcleo añade `/conversations`, historial paginado, lectura compartida, pausa del asistente y asignación humana. La ingestión es interna y reutiliza CustomersService; PostgreSQL conserva mensajes y un outbox transaccional. BullMQ procesa con IDs determinísticos, leases y reintentos acotados. No se conecta WhatsApp ni IA todavía.
+
+La migración aditiva `20260923060201_add_messaging_core` agrega Conversation, Message, MessageAttachment y MessagingOutbox. `MESSAGING_ENABLED=false` mantiene apagados los workers hasta configurar `REDIS_URL`; no significa que el procesamiento en background haya sido probado.
+
+Consulta la [guía de mensajería/Postman y demo local](docs/messaging-postman.md) y el [diseño aprobado](docs/messaging-core-design.md). Al 13/10/2026, las colas INBOUND/OUTBOUND y la recuperación tras caída abrupta/reinicio de Redis aislado pasan pruebas con Meta simulado. Consulta el [alcance y pendientes de cierre](docs/sprint-3-progress.md).
+
+## WhatsApp Cloud API — Fase 2
+
+La integración añade `GET/POST /webhooks/whatsapp` con firma HMAC sobre raw body y
+`POST /conversations/:id/messages` para ADMIN/OPERATOR, con `Idempotency-Key` obligatorio
+y respuesta 202. Reutiliza clientes, conversaciones, mensajes y outbox; incorpora la
+cola saliente, metadatos de media y estados SENT/DELIVERED/READ/FAILED/UNKNOWN.
+
+`WHATSAPP_ENABLED=false` mantiene la integración apagada. Activarla exige credenciales
+de Meta, Redis y mensajería habilitada. No incluye IA ni plantillas. Los envíos con
+resultado incierto no se reintentan automáticamente para evitar duplicados.
+
+Consulta la [guía de configuración, Postman y prueba real](docs/whatsapp-postman.md).
+La implementación tiene pruebas automatizadas con Meta simulado y evidencia manual
+de recepción PROCESSED y envío DELIVERED usando el número de prueba de Meta.
+Validación del 13/10/2026: build, 418 pruebas unitarias y 183 de integración aprobadas,
+incluidas ambas colas con Redis real. El [cierre operativo](docs/sprint-3-progress.md)
+conserva pendientes; no equivale a producción ni al número real del restaurante.
+La fase añadió dos migraciones aditivas, sin reiniciar ni eliminar datos existentes.
+
+## Redis local con Docker
+
+El archivo `compose.yaml` levanta únicamente Redis para las colas de mensajería, con persistencia y puerto limitado a localhost. NestJS sigue ejecutándose con `npm run start:dev`. Consulta la [guía de instalación y verificación en Windows](docs/redis-docker.md).
 
 ## Licencia
 

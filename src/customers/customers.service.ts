@@ -191,21 +191,29 @@ export class CustomersService {
     }
   }
 
-  async touchLastContact(customerId: string, at = new Date()) {
+  async touchLastContact(
+    customerId: string,
+    at = new Date(),
+    transaction?: Prisma.TransactionClient,
+  ) {
     this.validateContactDate(at);
-    return this.transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
       await this.requireCustomer(tx, customerId);
       await this.touch(tx, customerId, at);
       return tx.customer.findUniqueOrThrow({
         where: { id: customerId },
         select: customerSelect,
       });
-    });
+    };
+    return transaction ? operation(transaction) : this.transaction(operation);
   }
 
-  async findOrCreateByContact(dto: CreateCustomerDto) {
+  async findOrCreateByContact(
+    dto: CreateCustomerDto,
+    transaction?: Prisma.TransactionClient,
+  ) {
     const contact = normalizeContact(dto);
-    return this.transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
       const matches = await this.matches(tx, contact);
       if (matches.length > 1) {
         throw new ConflictException(
@@ -242,7 +250,8 @@ export class CustomersService {
         },
         select: customerSelect,
       });
-    });
+    };
+    return transaction ? operation(transaction) : this.transaction(operation);
   }
 
   async addInterest(customerId: string, dto: CreateCustomerInterestDto) {

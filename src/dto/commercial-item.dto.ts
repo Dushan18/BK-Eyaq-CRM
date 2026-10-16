@@ -105,7 +105,7 @@ abstract class CommercialItemWritableFieldsDto {
   })
   basePrice?: string | null;
 
-  @IsOptional()
+  @ValidateIf(wasProvided)
   @Type(() => Number)
   @IsInt()
   @Min(0)
@@ -179,7 +179,7 @@ export class CreateCommercialItemDto extends CommercialItemWritableFieldsDto {
 }
 
 export class UpdateCommercialItemDto {
-  @IsOptional()
+  @ValidateIf(wasProvided)
   @IsUUID()
   categoryId?: string;
 
@@ -220,7 +220,7 @@ export class UpdateCommercialItemDto {
   })
   basePrice?: string | null;
 
-  @IsOptional()
+  @ValidateIf(wasProvided)
   @Type(() => Number)
   @IsInt()
   @Min(0)
@@ -303,6 +303,7 @@ export class CommercialItemQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(1_000_000)
   page: number = 1;
 
   @IsOptional()

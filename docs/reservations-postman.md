@@ -178,7 +178,7 @@ PATCH {{baseUrl}}/reservations/{{reservationId}}
 }
 ```
 
-Esperado: **200 OK**, mismo código y estado CONFIRMED. Define una nueva fecha futura en la variable si deseas reprogramar. Solo se editan reservas CONFIRMED; no se borran fecha, cliente ni cantidad con null. Notas y elemento comercial sí admiten null. No hay historial de reprogramaciones en esta fase.
+Esperado: **200 OK**, mismo código. Si cambia el instante reservado, el estado pasa a RESCHEDULED y se registra historial con el usuario autenticado; si solo cambian datos generales, se conserva el estado. Se editan reservas CONFIRMED, UPCOMING o RESCHEDULED. No se borran fecha, cliente ni cantidad con null. Notas y elemento comercial sí admiten null. Para registrar un motivo de reprogramación utiliza el endpoint específico descrito más abajo.
 
 ## 8. Estado operativo de la reserva
 
@@ -202,7 +202,7 @@ Después:
 { "status": "COMPLETED" }
 ```
 
-Transiciones: CONFIRMED → IN_SERVICE/CANCELLED/NO_SHOW; IN_SERVICE → COMPLETED. IN_SERVICE y NO_SHOW requieren que haya llegado la hora. Estados finales no se reactivan. Repetir el mismo estado habilitado es idempotente. UPCOMING y RESCHEDULED están reservados para el futuro y se rechazan con 400.
+Transiciones: CONFIRMED → UPCOMING/IN_SERVICE/CANCELLED/NO_SHOW; UPCOMING → IN_SERVICE/CANCELLED/NO_SHOW; RESCHEDULED → CONFIRMED/UPCOMING/IN_SERVICE/CANCELLED/NO_SHOW; IN_SERVICE → COMPLETED. IN_SERVICE y NO_SHOW requieren que haya llegado la hora. Estados finales no se reactivan. Repetir el mismo estado habilitado es idempotente. UPCOMING es manual, sin cron ni ventana automática. RESCHEDULED solo se establece al cambiar realmente la fecha y no se acepta como destino en `/status`.
 
 No cambies directamente la base habitual para simular fechas pasadas: la suite aislada ya cubre esos escenarios con fixtures.
 
@@ -211,7 +211,7 @@ No cambies directamente la base habitual para simular fechas pasadas: la suite a
 - UUID mal formado → 400; recurso relacionado inexistente → 404.
 - Item inactivo/no aprobado al asociarlo → 400.
 - Fecha sin zona, pasada al crear/asignar, precio inválido o cantidad < 1 → 400.
-- Transición no permitida, edición de cancelado o de reserva no confirmada → 409.
+- Transición no permitida o edición de reserva fuera de CONFIRMED/UPCOMING/RESCHEDULED → 409.
 - OPERATOR crea solicitud pero no reserva manual → 201 / 403.
 - OWNER consulta pero no modifica → 200 / 403; SUPPORT → 403; sin token → 401.
 - No existen endpoints DELETE.
@@ -221,6 +221,8 @@ No cambies directamente la base habitual para simular fechas pasadas: la suite a
 - No se implementan disponibilidad, mesas, aprobación, WhatsApp, conversaciones, recordatorios ni auditoría funcional nueva.
 
 ## Pruebas automatizadas
+
+Las acciones adicionales del calendario están documentadas en la [guía operativa](reservation-calendar-postman.md). Incluye asignación, notas con autor, reprogramación con historial y filtros nuevos. Se conserva `notes` como texto general; las observaciones con autor se devuelven en `noteHistory`.
 
 ```powershell
 npx prisma validate

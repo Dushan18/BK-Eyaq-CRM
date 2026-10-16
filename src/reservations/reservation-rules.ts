@@ -58,11 +58,20 @@ export function requireReservationTransition(
   const allowed: Partial<
     Record<ReservationStatus, readonly ReservationStatus[]>
   > = {
-    CONFIRMED: ['IN_SERVICE', 'CANCELLED', 'NO_SHOW'],
+    CONFIRMED: ['UPCOMING', 'IN_SERVICE', 'CANCELLED', 'NO_SHOW'],
+    UPCOMING: ['IN_SERVICE', 'CANCELLED', 'NO_SHOW'],
+    RESCHEDULED: [
+      'CONFIRMED',
+      'UPCOMING',
+      'IN_SERVICE',
+      'CANCELLED',
+      'NO_SHOW',
+    ],
     IN_SERVICE: ['COMPLETED'],
   };
   const active: ReservationStatus[] = [
     'CONFIRMED',
+    'UPCOMING',
     'IN_SERVICE',
     'COMPLETED',
     'CANCELLED',
@@ -75,6 +84,30 @@ export function requireReservationTransition(
     throw new ConflictException('Transición de reserva no permitida');
   if ((next === 'IN_SERVICE' || next === 'NO_SHOW') && at > now) {
     throw new ConflictException('Todavía no ha llegado la hora de la reserva');
+  }
+}
+
+export function requireReservationEditable(status: ReservationStatus) {
+  if (
+    status !== 'CONFIRMED' &&
+    status !== 'UPCOMING' &&
+    status !== 'RESCHEDULED'
+  ) {
+    throw new ConflictException(
+      'La reserva no admite edición o reprogramación en su estado actual',
+    );
+  }
+}
+
+export function requireReservationAssignable(status: ReservationStatus) {
+  if (
+    status === 'COMPLETED' ||
+    status === 'CANCELLED' ||
+    status === 'NO_SHOW'
+  ) {
+    throw new ConflictException(
+      'No se modifica el responsable de una reserva finalizada',
+    );
   }
 }
 

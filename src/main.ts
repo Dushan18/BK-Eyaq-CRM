@@ -3,7 +3,9 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
+  // Close workers/dispatcher and connections when the process stops gracefully.
+  app.enableShutdownHooks();
 
   app.useGlobalPipes(
     new ValidationPipe({

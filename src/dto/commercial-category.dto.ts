@@ -8,6 +8,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 const trimString = ({ value }: TransformFnParams): unknown =>
@@ -42,7 +43,7 @@ export class CreateCommercialCategoryDto {
   @MaxLength(2000)
   descriptionEn?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object: object, value: unknown) => value !== undefined)
   @Type(() => Number)
   @IsInt()
   @Min(0)
@@ -79,7 +80,7 @@ export class UpdateCommercialCategoryDto {
   @MaxLength(2000)
   descriptionEn?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object: object, value: unknown) => value !== undefined)
   @Type(() => Number)
   @IsInt()
   @Min(0)

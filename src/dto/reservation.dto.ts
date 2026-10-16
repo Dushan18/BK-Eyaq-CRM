@@ -1,4 +1,15 @@
-import { IsEnum, IsIn, IsOptional, IsUUID, ValidateIf } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator';
+import { Transform, type TransformFnParams } from 'class-transformer';
 import { ReservationStatus } from '../../generated/prisma/enums';
 import {
   PeopleCount,
@@ -6,6 +17,7 @@ import {
   ReservationBaseQueryDto,
   ReservationDate,
   ReservationText,
+  trimReservationText,
 } from './reservation-common.dto';
 
 class ReservationOptionalFieldsDto {
@@ -46,6 +58,7 @@ export class UpdateReservationDto extends ReservationOptionalFieldsDto {
 export class UpdateReservationStatusDto {
   @IsIn([
     ReservationStatus.CONFIRMED,
+    ReservationStatus.UPCOMING,
     ReservationStatus.IN_SERVICE,
     ReservationStatus.COMPLETED,
     ReservationStatus.CANCELLED,
@@ -56,6 +69,49 @@ export class UpdateReservationStatusDto {
 
 export class ReservationQueryDto extends ReservationBaseQueryDto {
   @ValidateIf(provided)
+  @IsUUID()
+  commercialItemId?: string;
+
+  @ValidateIf(provided)
+  @IsUUID()
+  assignedUserId?: string;
+
+  @Transform(trimReservationText)
+  @ValidateIf(provided)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  search?: string;
+
+  @Transform(({ value }: TransformFnParams): unknown =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @ValidateIf(provided)
+  @IsBoolean()
+  excludeCancelled?: boolean;
+
+  @ValidateIf(provided)
   @IsEnum(ReservationStatus)
   status?: ReservationStatus;
+}
+
+export class AssignReservationDto {
+  // null desasigna; undefined no es una operación válida.
+  @ValidateIf((_: object, value: unknown) => value !== null)
+  @IsUUID()
+  assignedUserId!: string | null;
+}
+
+export class CreateReservationNoteDto {
+  @ReservationText()
+  content!: string;
+}
+
+export class RescheduleReservationDto {
+  @ReservationDate()
+  reservationAt!: string;
+
+  @IsOptional()
+  @ReservationText()
+  reason?: string | null;
 }

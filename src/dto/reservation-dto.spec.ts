@@ -155,7 +155,7 @@ describe('Reservation DTOs', () => {
       ).length,
     ).toBeGreaterThan(0);
   });
-  it.each(['UPCOMING', 'RESCHEDULED', 'INVALID'])(
+  it.each(['RESCHEDULED', 'INVALID'])(
     'bloquea estado operativo %s',
     async (status) => {
       expect(

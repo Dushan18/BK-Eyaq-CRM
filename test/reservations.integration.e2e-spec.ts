@@ -13,8 +13,31 @@ import { PrismaClient } from '../generated/prisma/client';
 import { RoleCode } from '../generated/prisma/enums';
 import { PrismaService } from '../src/database/prisma.service';
 import { AppModule } from '../src/app.module';
+import {
+  closureMail,
+  registerSprint2ClosureTests,
+} from './sprint2-closure.cases';
+import { MailService } from '../src/auth/mail/mail.service';
+import { registerMessagingCoreTests } from './messaging-core.cases';
+import { registerWhatsAppTests, whatsappTestConfig } from './whatsapp.cases';
+import { WhatsAppConfig } from '../src/whatsapp/whatsapp.config';
 
 interface BookingResponse {
+  assignedUserId?: string | null;
+  assignedUser?: { id: string; isActive: boolean; isEligible: boolean } | null;
+  noteHistory?: {
+    id: string;
+    authorUserId: string;
+    content: string;
+    createdAt: string;
+  }[];
+  rescheduleHistory?: {
+    id: string;
+    previousReservationAt: string;
+    newReservationAt: string;
+    reason: string | null;
+    changedByUserId: string;
+  }[];
   id: string;
   code: string;
   status: string;
@@ -125,8 +148,12 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     const fixture = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PrismaService)
       .useValue(prisma)
+      .overrideProvider(MailService)
+      .useValue(closureMail)
+      .overrideProvider(WhatsAppConfig)
+      .useValue(whatsappTestConfig)
       .compile();
-    app = fixture.createNestApplication();
+    app = fixture.createNestApplication({ rawBody: true });
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -629,7 +656,7 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     expect(updated.body as BookingResponse).toMatchObject({
       code: r.code,
       numberOfPeople: 6,
-      status: 'CONFIRMED',
+      status: 'RESCHEDULED',
     });
     await request(server)
       .patch(`/reservations/${r.id}/status`)
@@ -701,6 +728,15 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       reservationAt: start.toISOString(),
       numberOfPeople: 2,
     });
+    const cancelled = await createRequest({
+      reservationAt: start.toISOString(),
+      numberOfPeople: 2,
+    });
+    await request(server)
+      .patch(`/reservation-requests/${cancelled.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'CANCELLED' })
+      .expect(200);
     await prisma.reservationRequest.update({
       where: { id: rejected.id },
       data: { status: 'REJECTED' },
@@ -726,6 +762,7 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     expect(ids).toEqual([first.id, later.id]);
     expect(ids).not.toContain(ready.id);
     expect(ids).not.toContain(rejected.id);
+    expect(ids).not.toContain(cancelled.id);
     const page = await request(server)
       .get('/reservations')
       .set('Authorization', auth())
@@ -994,6 +1031,507 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       .expect(400);
   });
 
+  const userId = async (role: RoleCode) =>
+    (
+      await prisma.user.findUniqueOrThrow({
+        where: { email: `${role.toLowerCase()}@test.example` },
+        select: { id: true },
+      })
+    ).id;
+  const detail = async (id: string) =>
+    (
+      await request(server)
+        .get(`/reservations/${id}`)
+        .set('Authorization', auth())
+        .expect(200)
+    ).body as BookingResponse;
+
+  it('ADMIN asigna OPERATOR/ADMIN, muestra responsable seguro y desasigna', async () => {
+    const r = await createReservation();
+    for (const role of [RoleCode.OPERATOR, RoleCode.ADMIN]) {
+      const assignedUserId = await userId(role);
+      const result = await request(server)
+        .patch(`/reservations/${r.id}/assignee`)
+        .set('Authorization', auth())
+        .send({ assignedUserId })
+        .expect(200);
+      expect(result.body as BookingResponse).toMatchObject({
+        assignedUserId,
+        assignedUser: { id: assignedUserId, isActive: true, isEligible: true },
+      });
+      expect(result.text).not.toMatch(
+        /passwordHash|sessionId|normalizedPhone|normalizedEmail|tokens/,
+      );
+    }
+    const cleared = await request(server)
+      .patch(`/reservations/${r.id}/assignee`)
+      .set('Authorization', auth())
+      .send({ assignedUserId: null })
+      .expect(200);
+    expect((cleared.body as BookingResponse).assignedUser).toBeNull();
+    await request(server)
+      .patch(`/reservations/${r.id}/assignee`)
+      .set('Authorization', auth())
+      .send({})
+      .expect(400);
+    await request(server)
+      .patch(`/reservations/${r.id}/assignee`)
+      .set('Authorization', auth())
+      .send({ assignedUserId: randomUUID() })
+      .expect(404);
+  });
+
+  it('rechaza responsables inactivos, OWNER y SUPPORT; conserva asignación histórica', async () => {
+    const r = await createReservation();
+    for (const role of [RoleCode.OWNER, RoleCode.SUPPORT])
+      await request(server)
+        .patch(`/reservations/${r.id}/assignee`)
+        .set('Authorization', auth())
+        .send({ assignedUserId: await userId(role) })
+        .expect(400);
+    const id = await userId(RoleCode.OPERATOR);
+    await request(server)
+      .patch(`/reservations/${r.id}/assignee`)
+      .set('Authorization', auth())
+      .send({ assignedUserId: id })
+      .expect(200);
+    await prisma.user.update({ where: { id }, data: { isActive: false } });
+    try {
+      expect((await detail(r.id)).assignedUser).toMatchObject({
+        id,
+        isActive: false,
+        isEligible: false,
+      });
+      await request(server)
+        .patch(`/reservations/${r.id}/assignee`)
+        .set('Authorization', auth())
+        .send({ assignedUserId: id })
+        .expect(400);
+    } finally {
+      await prisma.user.update({ where: { id }, data: { isActive: true } });
+    }
+    const role = await prisma.role.findUniqueOrThrow({
+      where: { code: RoleCode.OPERATOR },
+    });
+    await prisma.userRole.delete({
+      where: { userId_roleId: { userId: id, roleId: role.id } },
+    });
+    try {
+      expect((await detail(r.id)).assignedUser).toMatchObject({
+        id,
+        isActive: true,
+        isEligible: false,
+      });
+    } finally {
+      await prisma.userRole.create({ data: { userId: id, roleId: role.id } });
+    }
+  });
+
+  it('OPERATOR solo toma reservas libres y libera su propia asignación', async () => {
+    const r = await createReservation();
+    const id = await userId(RoleCode.OPERATOR);
+    const adminId = await userId(RoleCode.ADMIN);
+    const endpoint = `/reservations/${r.id}/assignee`;
+    await request(server)
+      .patch(endpoint)
+      .set('Authorization', auth(RoleCode.OPERATOR))
+      .send({ assignedUserId: id })
+      .expect(200);
+    await request(server)
+      .patch(endpoint)
+      .set('Authorization', auth(RoleCode.OPERATOR))
+      .send({ assignedUserId: adminId })
+      .expect(403);
+    await request(server)
+      .patch(endpoint)
+      .set('Authorization', auth(RoleCode.OPERATOR))
+      .send({ assignedUserId: null })
+      .expect(200);
+    await request(server)
+      .patch(endpoint)
+      .set('Authorization', auth())
+      .send({ assignedUserId: adminId })
+      .expect(200);
+    for (const assignedUserId of [null, id])
+      await request(server)
+        .patch(endpoint)
+        .set('Authorization', auth(RoleCode.OPERATOR))
+        .send({ assignedUserId })
+        .expect(403);
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'CANCELLED' })
+      .expect(200);
+    await request(server)
+      .patch(endpoint)
+      .set('Authorization', auth())
+      .send({ assignedUserId: null })
+      .expect(409);
+  });
+
+  it.each([RoleCode.OWNER, RoleCode.SUPPORT])(
+    '%s no usa las nuevas acciones',
+    async (role) => {
+      const r = await createReservation();
+      await request(server)
+        .patch(`/reservations/${r.id}/assignee`)
+        .set('Authorization', auth(role))
+        .send({ assignedUserId: null })
+        .expect(403);
+      await request(server)
+        .post(`/reservations/${r.id}/notes`)
+        .set('Authorization', auth(role))
+        .send({ content: 'Test' })
+        .expect(403);
+      await request(server)
+        .patch(`/reservations/${r.id}/reschedule`)
+        .set('Authorization', auth(role))
+        .send({ reservationAt: future(30) })
+        .expect(403);
+    },
+  );
+
+  it('acciones nuevas exigen token y recurso existente', async () => {
+    const id = randomUUID();
+    await request(server)
+      .post(`/reservations/${id}/notes`)
+      .send({ content: 'Test' })
+      .expect(401);
+    await request(server)
+      .patch(`/reservations/${id}/assignee`)
+      .send({ assignedUserId: null })
+      .expect(401);
+    await request(server)
+      .patch(`/reservations/${id}/reschedule`)
+      .send({ reservationAt: future(30) })
+      .expect(401);
+    await request(server)
+      .post(`/reservations/${id}/notes`)
+      .set('Authorization', auth())
+      .send({ content: 'Test' })
+      .expect(404);
+    await request(server)
+      .patch(`/reservations/${id}/assignee`)
+      .set('Authorization', auth())
+      .send({ assignedUserId: null })
+      .expect(404);
+    await request(server)
+      .patch(`/reservations/${id}/reschedule`)
+      .set('Authorization', auth())
+      .send({ reservationAt: future(30) })
+      .expect(404);
+  });
+
+  it('notas con autor JWT, orden estable y notes original compatible', async () => {
+    const r = await createReservation({ notes: 'Texto original' });
+    const ids: string[] = [];
+    for (const role of [RoleCode.ADMIN, RoleCode.OPERATOR]) {
+      const result = await request(server)
+        .post(`/reservations/${r.id}/notes`)
+        .set('Authorization', auth(role))
+        .send({ content: ` ${role} nota ` })
+        .expect(201);
+      const note = result.body as {
+        id: string;
+        authorUserId: string;
+        content: string;
+      };
+      expect(note.authorUserId).toBe(await userId(role));
+      expect(note.content).toBe(`${role} nota`);
+      ids.push(note.id);
+    }
+    const value = await detail(r.id);
+    expect(value.notes).toBe('Texto original');
+    expect(value.noteHistory?.map((note) => note.id)).toEqual(ids);
+    await request(server)
+      .post(`/reservations/${r.id}/notes`)
+      .set('Authorization', auth())
+      .send({ content: 'Test', authorUserId: await userId(RoleCode.OPERATOR) })
+      .expect(400);
+    await request(server)
+      .post(`/reservations/${r.id}/notes`)
+      .set('Authorization', auth())
+      .send({ content: ' ' })
+      .expect(400);
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'CANCELLED' })
+      .expect(200);
+    await request(server)
+      .post(`/reservations/${r.id}/notes`)
+      .set('Authorization', auth())
+      .send({ content: 'Aclaración posterior' })
+      .expect(201);
+    const list = await request(server)
+      .get('/reservations')
+      .set('Authorization', auth())
+      .query({ search: r.code })
+      .expect(200);
+    expect((list.body as BookingPage).data[0]).not.toHaveProperty(
+      'noteHistory',
+    );
+  });
+
+  it.each([RoleCode.ADMIN, RoleCode.OPERATOR])(
+    '%s reprograma con historial y no duplica el mismo instante',
+    async (role) => {
+      const r = await createReservation();
+      const at = future(30);
+      const path = `/reservations/${r.id}/reschedule`;
+      await request(server)
+        .patch(path)
+        .set('Authorization', auth(role))
+        .send({ reservationAt: at, reason: ' Cambio solicitado ' })
+        .expect(200);
+      const after = await detail(r.id);
+      expect(after).toMatchObject({
+        code: r.code,
+        reservationAt: at,
+        status: 'RESCHEDULED',
+      });
+      expect(after.rescheduleHistory).toHaveLength(1);
+      expect(after.rescheduleHistory?.[0]).toMatchObject({
+        previousReservationAt: r.reservationAt,
+        newReservationAt: at,
+        reason: 'Cambio solicitado',
+        changedByUserId: await userId(role),
+      });
+      await request(server)
+        .patch(path)
+        .set('Authorization', auth(role))
+        .send({ reservationAt: at })
+        .expect(200);
+      expect((await detail(r.id)).rescheduleHistory).toHaveLength(1);
+      await request(server)
+        .patch(path)
+        .set('Authorization', auth(role))
+        .send({ reservationAt: '2000-01-01T00:00:00Z' })
+        .expect(400);
+      // El PATCH anterior tampoco puede saltarse el historial.
+      await request(server)
+        .patch(`/reservations/${r.id}`)
+        .set('Authorization', auth(role))
+        .send({ reservationAt: future(31), notes: 'Nota general' })
+        .expect(200);
+      const again = await detail(r.id);
+      expect(again.rescheduleHistory).toHaveLength(2);
+      expect(again.notes).toBe('Nota general');
+    },
+  );
+
+  it('UPCOMING permite edición y reprogramación; estado RESCHEDULED no se asigna directamente', async () => {
+    const r = await createReservation();
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'UPCOMING' })
+      .expect(200);
+    await request(server)
+      .patch(`/reservations/${r.id}`)
+      .set('Authorization', auth())
+      .send({ notes: 'Próxima' })
+      .expect(200);
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'RESCHEDULED' })
+      .expect(400);
+    await request(server)
+      .patch(`/reservations/${r.id}/reschedule`)
+      .set('Authorization', auth())
+      .send({ reservationAt: future(20) })
+      .expect(200);
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'CONFIRMED' })
+      .expect(200);
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'CANCELLED' })
+      .expect(200);
+    await request(server)
+      .patch(`/reservations/${r.id}/reschedule`)
+      .set('Authorization', auth())
+      .send({ reservationAt: future(40) })
+      .expect(409);
+  });
+
+  it('filtros combinables, búsqueda y canceladas sin cambiar default', async () => {
+    const r = await createReservation({ commercialItemId: itemId });
+    const assignedUserId = await userId(RoleCode.OPERATOR);
+    await request(server)
+      .patch(`/reservations/${r.id}/assignee`)
+      .set('Authorization', auth())
+      .send({ assignedUserId })
+      .expect(200);
+    for (const search of [r.code, 'ReservaTest', '987654321']) {
+      const result = await request(server)
+        .get('/reservations')
+        .set('Authorization', auth())
+        .query({
+          search,
+          assignedUserId,
+          commercialItemId: itemId,
+          customerId,
+          status: 'CONFIRMED',
+          dateFrom: future(6),
+          dateTo: future(8),
+          limit: 100,
+        })
+        .expect(200);
+      expect(
+        (result.body as BookingPage).data.some((row) => row.id === r.id),
+      ).toBe(true);
+    }
+    await request(server)
+      .patch(`/reservations/${r.id}/status`)
+      .set('Authorization', auth())
+      .send({ status: 'CANCELLED' })
+      .expect(200);
+    for (const extra of [
+      {},
+      { status: 'CANCELLED' },
+      { excludeCancelled: false },
+    ]) {
+      const result = await request(server)
+        .get('/reservations')
+        .set('Authorization', auth())
+        .query({ search: r.code, ...extra })
+        .expect(200);
+      expect((result.body as BookingPage).data.map((row) => row.id)).toEqual([
+        r.id,
+      ]);
+    }
+    const hidden = await request(server)
+      .get('/reservations')
+      .set('Authorization', auth())
+      .query({ search: r.code, excludeCancelled: true })
+      .expect(200);
+    expect((hidden.body as BookingPage).data).toEqual([]);
+    await request(server)
+      .get('/reservations')
+      .set('Authorization', auth())
+      .query({ status: 'CANCELLED', excludeCancelled: true })
+      .expect(400);
+  });
+
+  it('reprogramaciones concurrentes conservan una cadena completa de fechas', async () => {
+    const r = await createReservation();
+    const dates = [future(33), future(34)];
+    const results = await Promise.all(
+      dates.map((reservationAt) =>
+        request(server)
+          .patch(`/reservations/${r.id}/reschedule`)
+          .set('Authorization', auth())
+          .send({ reservationAt }),
+      ),
+    );
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    const after = await detail(r.id);
+    const history = after.rescheduleHistory!;
+    expect(history).toHaveLength(2);
+    const first = history.find(
+      (row) => row.previousReservationAt === r.reservationAt,
+    )!;
+    const second = history.find(
+      (row) => row.previousReservationAt === first.newReservationAt,
+    )!;
+    expect(second.newReservationAt).toBe(after.reservationAt);
+  });
+
+  it('cancelación concurrente deja estado final y no crea historial parcial', async () => {
+    const r = await createReservation();
+    const results = await Promise.all([
+      request(server)
+        .patch(`/reservations/${r.id}/status`)
+        .set('Authorization', auth())
+        .send({ status: 'CANCELLED' }),
+      request(server)
+        .patch(`/reservations/${r.id}/reschedule`)
+        .set('Authorization', auth())
+        .send({ reservationAt: future(50) }),
+    ]);
+    expect(results[0].status).toBe(200);
+    expect([200, 409]).toContain(results[1].status);
+    const after = await detail(r.id);
+    expect(after.status).toBe('CANCELLED');
+    expect(after.rescheduleHistory).toHaveLength(
+      results[1].status === 200 ? 1 : 0,
+    );
+  });
+
+  it('dos operadores no pueden apropiarse de la misma reserva libre', async () => {
+    const role = await prisma.role.findUniqueOrThrow({
+      where: { code: 'OPERATOR' },
+    });
+    const user = await prisma.user.create({
+      data: {
+        firstName: 'Otro',
+        lastName: 'Operador',
+        email: 'other-operator@test.example',
+        passwordHash: await bcrypt.hash(password, 4),
+        roles: { create: { roleId: role.id } },
+      },
+    });
+    const login = await request(server)
+      .post('/auth/login')
+      .send({ email: user.email, password })
+      .expect(201);
+    const r = await createReservation();
+    const firstId = await userId(RoleCode.OPERATOR);
+    const results = await Promise.all([
+      request(server)
+        .patch(`/reservations/${r.id}/assignee`)
+        .set('Authorization', auth(RoleCode.OPERATOR))
+        .send({ assignedUserId: firstId }),
+      request(server)
+        .patch(`/reservations/${r.id}/assignee`)
+        .set('Authorization', `Bearer ${(login.body as Tokens).accessToken}`)
+        .send({ assignedUserId: user.id }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 403]);
+    expect([firstId, user.id]).toContain((await detail(r.id)).assignedUserId);
+  });
+
+  it('restricciones conservan autores/historial y SetNull solo elimina asignación', async () => {
+    const r = await createReservation();
+    const user = await prisma.user.create({
+      data: {
+        firstName: 'Temporal',
+        lastName: 'Test',
+        email: 'temporary@test.example',
+        passwordHash: 'fixture',
+      },
+    });
+    await prisma.reservation.update({
+      where: { id: r.id },
+      data: { assignedUserId: user.id },
+    });
+    await prisma.user.delete({ where: { id: user.id } });
+    expect((await detail(r.id)).assignedUserId).toBeNull();
+    await request(server)
+      .post(`/reservations/${r.id}/notes`)
+      .set('Authorization', auth())
+      .send({ content: 'Historial' })
+      .expect(201);
+    await expect(
+      prisma.reservation.delete({ where: { id: r.id } }),
+    ).rejects.toThrow();
+    await expect(
+      prisma.user.delete({ where: { id: await userId(RoleCode.ADMIN) } }),
+    ).rejects.toThrow();
+    await request(server)
+      .patch(`/reservations/${r.id}/reschedule`)
+      .set('Authorization', auth())
+      .send({ reservationAt: future(60) })
+      .expect(200);
+    expect((await detail(r.id)).rescheduleHistory).toHaveLength(1);
+  });
+
   it('APIs existentes y login/refresh/logout siguen operativos', async () => {
     for (const path of [
       '/users',
@@ -1032,4 +1570,33 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       .send({ refreshToken: rotated.refreshToken })
       .expect(401);
   });
+  it.each([1, 7, 31])(
+    'cierre: rango calendario de %i días incluye inicio y excluye fin',
+    async (days) => {
+      const start = new Date(
+        Date.UTC(new Date().getUTCFullYear() + days, 0, 1),
+      );
+      const end = new Date(start.getTime() + days * 86400000);
+      const included = await createReservation({
+        reservationAt: start.toISOString(),
+      });
+      await createReservation({ reservationAt: end.toISOString() });
+      const result = await request(server)
+        .get('/reservations')
+        .set('Authorization', auth())
+        .query({ dateFrom: start.toISOString(), dateTo: end.toISOString() })
+        .expect(200);
+      expect((result.body as BookingPage).data.map((row) => row.id)).toEqual([
+        included.id,
+      ]);
+    },
+  );
+  registerSprint2ClosureTests({ server: () => server, auth, app: () => app });
+  registerMessagingCoreTests({
+    server: () => server,
+    auth,
+    app: () => app,
+    prisma: () => prisma,
+  });
+  registerWhatsAppTests({ server: () => server, auth, app: () => app, prisma: () => prisma });
 });
