@@ -19,6 +19,16 @@ const command = () => ({
   contact: { phone: '+51 987 654 321' },
 });
 describe('Mensajería: validación', () => {
+  it('reconoce el conflicto del adaptador al confirmar sin depender de P2010', () => {
+    expect(
+      prismaCode({
+        name: 'DriverAdapterError',
+        cause: { kind: 'TransactionWriteConflict', originalCode: '40001' },
+      }),
+    ).toBe('P2034');
+    expect(prismaCode({ cause: { originalCode: '40P01' } })).toBe('P2034');
+    expect(prismaCode(new Error('unrelated'))).toBeUndefined();
+  });
   it('reconoce conflictos de serialización de consultas SQL sin reintentar errores arbitrarios', () => {
     expect(
       prismaCode({

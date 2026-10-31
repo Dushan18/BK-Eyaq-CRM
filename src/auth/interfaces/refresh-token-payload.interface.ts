@@ -1,5 +1,5 @@
 export interface RefreshTokenPayload {
-    sub: string;
-    sessionId: string;
-    jti: string;
+  sub: string;
+  sessionId: string;
+  jti: string;
 }

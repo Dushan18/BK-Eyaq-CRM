@@ -9,9 +9,7 @@ describe('RolesGuard', () => {
   let reflector: jest.Mocked<Pick<Reflector, 'getAllAndOverride'>>;
   let guard: RolesGuard;
 
-  const createContext = (
-    user?: AuthenticatedUser,
-  ): ExecutionContext =>
+  const createContext = (user?: AuthenticatedUser): ExecutionContext =>
     ({
       getHandler: jest.fn(),
       getClass: jest.fn(),
@@ -53,9 +51,7 @@ describe('RolesGuard', () => {
   });
 
   it('rechaza el acceso cuando el usuario no tiene el rol requerido', () => {
-    reflector.getAllAndOverride.mockReturnValue([
-      RoleCode.ADMIN,
-    ]);
+    reflector.getAllAndOverride.mockReturnValue([RoleCode.ADMIN]);
 
     const user = {
       id: 'user-id',
@@ -72,9 +68,7 @@ describe('RolesGuard', () => {
   });
 
   it('rechaza el acceso cuando no existe un usuario autenticado', () => {
-    reflector.getAllAndOverride.mockReturnValue([
-      RoleCode.ADMIN,
-    ]);
+    reflector.getAllAndOverride.mockReturnValue([RoleCode.ADMIN]);
 
     expect(() => guard.canActivate(createContext())).toThrow(
       ForbiddenException,

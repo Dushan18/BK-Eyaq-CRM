@@ -28,6 +28,11 @@ import { MessageStatusService } from './message-status.service';
     OutboundMessagesService,
     MessageStatusService,
   ],
-  exports: [MessagesService, MessageStatusService],
+  exports: [
+    MessagesService,
+    MessageStatusService,
+    MessagingTransactionService,
+    OutboundMessagesService,
+  ],
 })
 export class MessagingModule {}

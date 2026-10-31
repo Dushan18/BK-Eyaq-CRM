@@ -16,6 +16,57 @@ datasource db {
 
 // Data Base
 
+enum SamantaDraftStatus {
+  GENERATING
+  READY
+  APPROVED
+  REJECTED
+  STALE
+  FAILED
+}
+
+model SamantaDraft {
+  id                  String @id @default(uuid())
+  conversationId      String
+  sourceMessageId     String
+  baselineSequence    Int
+  idempotencyKey      String @db.VarChar(80)
+  createdById         String
+  reviewedById        String?
+  editedById          String?
+  status              SamantaDraftStatus @default(GENERATING)
+  revision            Int @default(1)
+  model               String @db.VarChar(80)
+  promptVersion       String @db.VarChar(80)
+  knowledgeHash       String @db.VarChar(64)
+  originalContent     String? @db.Text
+  content             String? @db.Text
+  intent              String? @db.VarChar(20)
+  requiresHuman       Boolean @default(true)
+  missingFields       String[] @default([])
+  inputTokens         Int?
+  outputTokens        Int?
+  errorCode           String? @db.VarChar(80)
+  generationExpiresAt DateTime @db.Timestamptz(3)
+  expiresAt           DateTime @db.Timestamptz(3)
+  reviewedAt          DateTime? @db.Timestamptz(3)
+  outboundMessageId   String? @unique
+  createdAt           DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(3)
+  conversation        Conversation @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  sourceMessage       Message @relation("DraftSource", fields: [sourceMessageId], references: [id], onDelete: Restrict)
+  outboundMessage     Message? @relation("DraftOutbound", fields: [outboundMessageId], references: [id], onDelete: Restrict)
+  createdBy           User @relation("DraftCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  reviewedBy          User? @relation("DraftReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  editedBy            User? @relation("DraftEditor", fields: [editedById], references: [id], onDelete: Restrict)
+
+  @@unique([conversationId, idempotencyKey])
+  @@index([conversationId, createdAt, id])
+  @@index([createdAt])
+  @@index([status, generationExpiresAt])
+  @@map("samanta_drafts")
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -49,6 +100,7 @@ enum MessagingOutboxStatus {
 }
 
 model Conversation {
+  assistantDrafts        SamantaDraft[]
   id                     String         @id @default(uuid())
   customerId             String
   channel                ContactChannel
@@ -73,6 +125,8 @@ model Conversation {
 }
 
 model Message {
+  sourcedDrafts      SamantaDraft[] @relation("DraftSource")
+  approvedDraft      SamantaDraft?  @relation("DraftOutbound")
   id                 String              @id @default(uuid())
   conversationId     String
   channel            ContactChannel
@@ -223,6 +277,9 @@ enum CommercialApprovalStatus {
 }
 
 model User {
+  createdDrafts          SamantaDraft[] @relation("DraftCreator")
+  reviewedDrafts         SamantaDraft[] @relation("DraftReviewer")
+  editedDrafts           SamantaDraft[] @relation("DraftEditor")
   assignedConversations  Conversation[]                 @relation("ConversationAssignee")
   authoredMessages       Message[]                      @relation("MessageAuthor")
   assignedReservations   Reservation[]                  @relation("ReservationAssignee")

@@ -503,12 +503,17 @@ Ejecuta la suite e2e:
 npm run test:e2e -- --runInBand
 ```
 
-Estado actual:
+Última verificación completa: 30/10/2026.
 
 ```text
-30 suites y 334 pruebas unitarias aprobadas
-E2E estándar: 2 pruebas; integraciones opt-in: 25 de clientes y 62 de reservas/calendario
+418 pruebas unitarias aprobadas (32 suites)
+183 pruebas de integración aprobadas (3 suites, PostgreSQL y Redis habilitados)
+601 pruebas en total; ninguna omitida en esta ejecución
 ```
+
+`npm run lint:check` valida el código sin modificarlo. El [informe de correcciones
+y calidad](docs/quality-2026-10-30.md) incluye los comandos para habilitar todas las
+integraciones, las actualizaciones de dependencias y los avisos pendientes.
 
 ## Estructura principal
 
@@ -623,6 +628,22 @@ Validación del 13/10/2026: build, 418 pruebas unitarias y 183 de integración a
 incluidas ambas colas con Redis real. El [cierre operativo](docs/sprint-3-progress.md)
 conserva pendientes; no equivale a producción ni al número real del restaurante.
 La fase añadió dos migraciones aditivas, sin reiniciar ni eliminar datos existentes.
+
+## Samanta — borradores con revisión humana
+
+El módulo de Samanta genera borradores a petición de ADMIN/OPERATOR y permite
+consultarlos, editarlos, rechazarlos o aprobarlos. Solo la aprobación explícita
+encola el mensaje de WhatsApp. No confirma reservas ni responde automáticamente.
+
+Incluye control de revisión, vigencia del contexto, pausa, límites de generación
+e idempotencia. `SAMANTA_ENABLED=false` por defecto. La clave de API se configura
+solo en el servidor. La migración `20261030000000_samanta_drafts` es aditiva y
+debe aplicarse por separado antes de activar el módulo; no se aplicó a la BD del
+CRM durante el desarrollo. Pruebas con IA simulada, sin consumo real de API.
+
+Consulta la [guía de activación y Postman de Samanta](docs/samanta-postman.md).
+Validación técnica: 444 pruebas unitarias y 201 de integración aprobadas;
+consulta el [informe de resultados y límites](docs/samanta-validation-2026-10-30.md).
 
 ## Redis local con Docker
 

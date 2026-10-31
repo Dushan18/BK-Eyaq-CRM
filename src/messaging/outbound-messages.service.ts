@@ -33,13 +33,14 @@ export class OutboundMessagesService {
     authorUserId: string,
     key: string | undefined,
     dto: OutboundMessageDto,
+    transaction?: Prisma.TransactionClient,
   ) {
     this.config.assertEnabled();
     if (!key || !/^[a-zA-Z0-9_-]{16,80}$/.test(key))
       throw new BadRequestException(
         'Idempotency-Key debe contener 16 a 80 caracteres alfanuméricos, guion o guion bajo',
       );
-    return this.transactions.run(async (tx) => {
+    const enqueue = async (tx: Prisma.TransactionClient) => {
       const existing = await tx.message.findUnique({
         where: {
           conversationId_idempotencyKey: {
@@ -104,7 +105,10 @@ export class OutboundMessagesService {
         },
         select: messageSelect,
       });
-    }, true);
+    };
+    return transaction
+      ? enqueue(transaction)
+      : this.transactions.run(enqueue, true);
   }
   private async windowOpen(
     tx: Prisma.TransactionClient,

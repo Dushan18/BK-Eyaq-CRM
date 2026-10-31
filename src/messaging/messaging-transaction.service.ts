@@ -21,14 +21,8 @@ function serializationFailure(value: unknown, depth = 0): boolean {
 }
 
 export function prismaCode(error: unknown): string | undefined {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === 'P2010' &&
-    serializationFailure(error)
-  )
-    return 'P2034';
+  // The pg adapter can also throw an unwrapped DriverAdapterError at COMMIT.
+  if (serializationFailure(error)) return 'P2034';
   return typeof error === 'object' &&
     error !== null &&
     'code' in error &&
@@ -53,8 +47,16 @@ export class MessagingTransactionService {
         if (
           (code === 'P2034' || (retryUnique && code === 'P2002')) &&
           attempt < 4
-        )
+        ) {
+          // Avoid immediate retry storms when multiple workers commit together.
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              10 * (attempt + 1) + Math.floor(Math.random() * 10),
+            ),
+          );
           continue;
+        }
         if (code === 'P2002' || code === 'P2034')
           throw new ConflictException(
             'Conflicto de mensajería; vuelve a intentarlo',

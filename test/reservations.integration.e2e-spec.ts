@@ -21,6 +21,13 @@ import { MailService } from '../src/auth/mail/mail.service';
 import { registerMessagingCoreTests } from './messaging-core.cases';
 import { registerWhatsAppTests, whatsappTestConfig } from './whatsapp.cases';
 import { WhatsAppConfig } from '../src/whatsapp/whatsapp.config';
+import { SamantaConfig } from '../src/samanta/samanta.config';
+import { SamantaProvider } from '../src/samanta/samanta.provider';
+import {
+  registerSamantaTests,
+  samantaTestConfig,
+  samantaTestProvider,
+} from './samanta.cases';
 
 interface BookingResponse {
   assignedUserId?: string | null;
@@ -152,6 +159,10 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       .useValue(closureMail)
       .overrideProvider(WhatsAppConfig)
       .useValue(whatsappTestConfig)
+      .overrideProvider(SamantaConfig)
+      .useValue(samantaTestConfig)
+      .overrideProvider(SamantaProvider)
+      .useValue(samantaTestProvider)
       .compile();
     app = fixture.createNestApplication({ rawBody: true });
     app.useGlobalPipes(
@@ -1598,5 +1609,16 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     app: () => app,
     prisma: () => prisma,
   });
-  registerWhatsAppTests({ server: () => server, auth, app: () => app, prisma: () => prisma });
+  registerWhatsAppTests({
+    server: () => server,
+    auth,
+    app: () => app,
+    prisma: () => prisma,
+  });
+  registerSamantaTests({
+    server: () => server,
+    auth,
+    app: () => app,
+    prisma: () => prisma,
+  });
 });
