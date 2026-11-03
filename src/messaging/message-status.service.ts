@@ -21,10 +21,13 @@ export class MessageStatusService {
     private readonly prisma: PrismaService,
     private readonly transactions: MessagingTransactionService,
   ) {}
-  async accept(events: WhatsAppStatus[]) {
+  async accept(
+    events: WhatsAppStatus[],
+    channel: 'WHATSAPP' | 'FACEBOOK' = 'WHATSAPP',
+  ) {
     if (!events.length) return;
     await this.prisma.messageStatusEvent.createMany({
-      data: events.map((event) => ({ ...event, channel: 'WHATSAPP' as const })),
+      data: events.map((event) => ({ ...event, channel })),
       skipDuplicates: true,
     });
   }
@@ -76,7 +79,10 @@ export class MessageStatusService {
                   ? earliest(message.failedAt)
                   : message.failedAt
                 : null,
-            errorCode: status === 'FAILED' ? 'WHATSAPP_DELIVERY_FAILED' : null,
+            errorCode:
+              status === 'FAILED'
+                ? `${event.channel === 'FACEBOOK' ? 'MESSENGER' : 'WHATSAPP'}_DELIVERY_FAILED`
+                : null,
             errorReason: null,
             processingToken: null,
             processingUntil: null,
@@ -90,7 +96,9 @@ export class MessageStatusService {
             leaseToken: null,
             leaseUntil: null,
             lastErrorCode:
-              status === 'FAILED' ? 'WHATSAPP_DELIVERY_FAILED' : null,
+              status === 'FAILED'
+                ? `${event.channel === 'FACEBOOK' ? 'MESSENGER' : 'WHATSAPP'}_DELIVERY_FAILED`
+                : null,
           },
         });
         await tx.messageStatusEvent.update({

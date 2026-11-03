@@ -13,9 +13,10 @@ import { MessagingOutboxService } from './messaging-outbox.service';
 import { WhatsAppTransportModule } from '../whatsapp/whatsapp-transport.module';
 import { OutboundMessagesService } from './outbound-messages.service';
 import { MessageStatusService } from './message-status.service';
+import { MessengerTransportModule } from '../messenger/messenger-transport.module';
 
 @Module({
-  imports: [CustomersModule, WhatsAppTransportModule],
+  imports: [CustomersModule, WhatsAppTransportModule, MessengerTransportModule],
   controllers: [ConversationsController],
   providers: [
     ConversationsService,

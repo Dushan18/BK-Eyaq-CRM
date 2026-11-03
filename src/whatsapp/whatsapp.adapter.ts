@@ -6,6 +6,10 @@ import {
 } from '../messaging/inbound-message.command';
 import { WhatsAppConfig } from './whatsapp.config';
 import { createHash } from 'node:crypto';
+import {
+  readSendDiagnostic,
+  type WhatsAppSendDiagnostic,
+} from './whatsapp-send-diagnostic';
 
 export interface WhatsAppStatus {
   externalMessageId: string;
@@ -17,6 +21,7 @@ export class WhatsAppSendError extends Error {
   constructor(
     readonly outcome: 'retry' | 'failed' | 'unknown',
     readonly retryAfterMs = 1000,
+    readonly diagnostic?: WhatsAppSendDiagnostic,
   ) {
     super(`WHATSAPP_SEND_${outcome.toUpperCase()}`);
   }
@@ -193,17 +198,21 @@ export class WhatsAppAdapter implements MessagingChannelAdapter {
     }
     // Only an explicit rate-limit rejection is automatically retried. Network/5xx
     // may occur after acceptance; never assume provider-side idempotency.
+    const diagnostic = response.ok
+      ? undefined
+      : await readSendDiagnostic(response);
     if (response.status === 429) {
       const retry = response.headers.get('retry-after');
       const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : 1;
       throw new WhatsAppSendError(
         'retry',
         Math.min(3600000, Math.max(1000, seconds * 1000)),
+        diagnostic,
       );
     }
     if (response.status >= 500 || response.status === 408)
-      throw new WhatsAppSendError('unknown');
-    if (!response.ok) throw new WhatsAppSendError('failed');
+      throw new WhatsAppSendError('unknown', 1000, diagnostic);
+    if (!response.ok) throw new WhatsAppSendError('failed', 1000, diagnostic);
     try {
       const result = object(await response.json());
       return text(object(list(result.messages)[0]).id);

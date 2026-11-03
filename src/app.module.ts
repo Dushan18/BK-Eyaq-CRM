@@ -17,6 +17,7 @@ import { ReservationsModule } from './reservations/reservations.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { SamantaModule } from './samanta/samanta.module';
+import { MessengerModule } from './messenger/messenger.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { SamantaModule } from './samanta/samanta.module';
     ReservationsModule,
     MessagingModule,
     WhatsAppModule,
+    MessengerModule,
     SamantaModule,
   ],
   controllers: [AppController],

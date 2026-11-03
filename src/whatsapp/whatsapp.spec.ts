@@ -198,6 +198,42 @@ describe('WhatsApp configuración y adapter', () => {
         new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
       ).rejects.toEqual(new WhatsAppSendError('unknown'));
     });
+    it.each([
+      [400, 'failed'],
+      [401, 'failed'],
+      [429, 'retry'],
+      [500, 'unknown'],
+      [408, 'unknown'],
+    ] as const)(
+      'HTTP %s conserva diagnóstico sin alterar %s',
+      async (status, outcome) => {
+        fetchMock.mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 131000,
+                error_subcode: 7,
+                is_transient: true,
+                message: 'private-token private-phone private-content',
+              },
+            }),
+            { status },
+          ),
+        );
+        await expect(
+          new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
+        ).rejects.toMatchObject({
+          outcome,
+          diagnostic: {
+            httpStatus: status,
+            metaCode: 131000,
+            metaSubcode: 7,
+            isTransient: true,
+          },
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      },
+    );
     it('respuesta exitosa sin wamid no permite reenvío automático', async () => {
       fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
       await expect(

@@ -15,7 +15,10 @@ export interface ContactInput {
   email?: string | null;
 }
 
-export function normalizeContact(input: ContactInput) {
+export function normalizeContact(
+  input: ContactInput,
+  options: { allowMissingContact?: boolean } = {},
+) {
   const email = input.email == null ? null : normalizeContactEmail(input.email);
   if (email !== null && (!email || !isEmail(email) || email.length > 320)) {
     throw new BadRequestException('El correo no es válido');
@@ -51,7 +54,7 @@ export function normalizeContact(input: ContactInput) {
       normalizedPhone = parsed.number;
     }
   }
-  if (!normalizedPhone && !email) {
+  if (!normalizedPhone && !email && !options.allowMissingContact) {
     throw new BadRequestException(
       'Proporciona un email válido o un teléfono internacional; para un número nacional indica phoneCountry',
     );

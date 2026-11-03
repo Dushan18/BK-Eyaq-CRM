@@ -21,6 +21,8 @@ import { MailService } from '../src/auth/mail/mail.service';
 import { registerMessagingCoreTests } from './messaging-core.cases';
 import { registerWhatsAppTests, whatsappTestConfig } from './whatsapp.cases';
 import { WhatsAppConfig } from '../src/whatsapp/whatsapp.config';
+import { MessengerConfig } from '../src/messenger/messenger.config';
+import { registerMessengerTests, messengerTestConfig } from './messenger.cases';
 import { SamantaConfig } from '../src/samanta/samanta.config';
 import { SamantaProvider } from '../src/samanta/samanta.provider';
 import {
@@ -159,6 +161,8 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       .useValue(closureMail)
       .overrideProvider(WhatsAppConfig)
       .useValue(whatsappTestConfig)
+      .overrideProvider(MessengerConfig)
+      .useValue(messengerTestConfig)
       .overrideProvider(SamantaConfig)
       .useValue(samantaTestConfig)
       .overrideProvider(SamantaProvider)
@@ -1610,6 +1614,12 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     prisma: () => prisma,
   });
   registerWhatsAppTests({
+    server: () => server,
+    auth,
+    app: () => app,
+    prisma: () => prisma,
+  });
+  registerMessengerTests({
     server: () => server,
     auth,
     app: () => app,

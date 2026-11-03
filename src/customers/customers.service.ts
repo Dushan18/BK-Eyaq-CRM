@@ -143,21 +143,39 @@ export class CustomersService {
           phone: true,
           phoneCountry: true,
           email: true,
+          sourceChannel: true,
+          providerAccountId: true,
+          externalContactId: true,
         },
       });
       if (!current) throw new NotFoundException('Cliente no encontrado');
-      const contact = normalizeContact({
-        phone: dto.phone !== undefined ? dto.phone : current.phone,
-        phoneCountry:
-          dto.phone === null
-            ? null
-            : dto.phoneCountry !== undefined
-              ? dto.phoneCountry
-              : dto.phone !== undefined
-                ? null
-                : current.phoneCountry,
-        email: dto.email !== undefined ? dto.email : current.email,
-      });
+      const providerIdentity =
+        current.sourceChannel === 'FACEBOOK' &&
+        !!current.providerAccountId &&
+        !!current.externalContactId;
+      if (
+        providerIdentity &&
+        dto.sourceChannel !== undefined &&
+        dto.sourceChannel !== 'FACEBOOK'
+      )
+        throw new BadRequestException(
+          'No se puede cambiar el canal de una identidad de Messenger',
+        );
+      const contact = normalizeContact(
+        {
+          phone: dto.phone !== undefined ? dto.phone : current.phone,
+          phoneCountry:
+            dto.phone === null
+              ? null
+              : dto.phoneCountry !== undefined
+                ? dto.phoneCountry
+                : dto.phone !== undefined
+                  ? null
+                  : current.phoneCountry,
+          email: dto.email !== undefined ? dto.email : current.email,
+        },
+        { allowMissingContact: providerIdentity },
+      );
       if (dto.phone === null && dto.phoneCountry != null) {
         throw new BadRequestException('phoneCountry requiere un teléfono');
       }

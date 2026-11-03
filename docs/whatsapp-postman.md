@@ -194,6 +194,20 @@ Un rechazo HTTP 429 permite reintento con backoff, jitter y Retry-After numéric
 producen FAILED. HTTP 408, 5xx, error de red, timeout o respuesta exitosa sin ID
 producen UNKNOWN. No se guardan respuestas de error de Meta ni excepciones crudas.
 
+Los rechazos HTTP generan una línea `WHATSAPP_SEND_HTTP_ERROR` en la terminal/log
+del backend, con `messageId`, `outcome`, `httpStatus` y, cuando Meta los proporciona,
+`metaCode`, `metaSubcode` e `isTransient`. Solo se admiten códigos numéricos y el
+booleano; nunca se registra el texto libre, `error_data`, tokens, teléfonos,
+contenido, cabeceras ni el cuerpo completo. La lectura del diagnóstico está limitada
+a 16 KiB y un segundo. Si no se puede interpretar, se conserva el estado HTTP.
+Esto no cambia la política de reintentos ni el `errorCode` público del mensaje;
+`isTransient` es informativo y no autoriza reintentos adicionales.
+
+Los errores históricos no se pueden reconstruir con este cambio. Para diagnosticar
+un envío nuevo, hacerlo solo a un destinatario de prueba autorizado, con una clave
+de idempotencia nueva; reutilizar la clave anterior devuelve el mensaje existente.
+No reenviar mensajes `UNKNOWN` sin comprobar antes la entrega.
+
 Si un proceso muere en SENDING, al caducar su lease no se repite el POST: queda
 UNKNOWN. Esto favorece no duplicar por encima de reenviar automáticamente.
 

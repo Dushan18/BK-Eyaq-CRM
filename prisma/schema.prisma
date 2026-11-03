@@ -125,6 +125,7 @@ model Conversation {
 }
 
 model Message {
+  recipientExternalId String?             @db.VarChar(80)
   sourcedDrafts      SamantaDraft[] @relation("DraftSource")
   approvedDraft      SamantaDraft?  @relation("DraftOutbound")
   id                 String              @id @default(uuid())
@@ -595,6 +596,9 @@ enum ContactChannel {
 }
 
 model Customer {
+  // Provider-scoped identities are not phone numbers or fabricated emails.
+  providerAccountId   String?              @db.VarChar(80)
+  externalContactId   String?              @db.VarChar(80)
   conversations       Conversation[]
   reservationRequests ReservationRequest[]
   reservations        Reservation[]
@@ -616,6 +620,7 @@ model Customer {
   interests           CustomerInterest[]
 
   @@index([status])
+  @@unique([sourceChannel, providerAccountId, externalContactId])
   @@index([sourceChannel])
   @@index([lastContactAt, id])
   @@index([createdAt])
