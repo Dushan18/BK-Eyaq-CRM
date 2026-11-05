@@ -10,6 +10,7 @@ import { InstagramService } from './instagram.service';
 import { InstagramController } from './instagram.controller';
 import { MessagesService } from '../messaging/messages.service';
 import { CustomersService } from '../customers/customers.service';
+import { exceedsTextLimit } from '../messaging/channel-transport';
 
 const settings = {
   INSTAGRAM_ENABLED: 'true',
@@ -248,6 +249,116 @@ describe('Instagram parser', () => {
       ]);
     },
   );
+});
+
+describe('Instagram: envío de respuestas', () => {
+  afterEach(() => jest.restoreAllMocks());
+  const igsid = (id: string) => ({
+    recipientPhone: null,
+    recipientExternalId: id,
+  });
+  it('cumple el contrato de canal: solo envía con token y al IGSID de su cuenta', () => {
+    const sending = new InstagramAdapter(namingConfig());
+    expect(sending).toMatchObject({
+      channel: 'INSTAGRAM',
+      errorPrefix: 'INSTAGRAM',
+      label: 'Instagram',
+      maxTextLength: 1000,
+      maxTextBytes: 1000,
+      enabled: true,
+      providerAccountId: '123',
+    });
+    const customer = {
+      normalizedPhone: '+51987654321',
+      providerAccountId: '123',
+      externalContactId: '456',
+      whatsappUserId: 'PE.1',
+    };
+    expect(sending.recipientOf(customer)).toEqual(igsid('456'));
+    expect(
+      sending.recipientOf({ ...customer, providerAccountId: '999' }),
+    ).toBeNull();
+    expect(
+      sending.recipientOf({ ...customer, externalContactId: null }),
+    ).toBeNull();
+    // Without a token, Instagram still receives but refuses to send with a clear 503.
+    const receiveOnly = new InstagramAdapter(config());
+    expect(receiveOnly.enabled).toBe(false);
+    expect(() => receiveOnly.assertEnabled()).toThrow(
+      'El envío por Instagram no está configurado',
+    );
+  });
+  it('envía al endpoint de la cuenta con el token y valida la respuesta', async () => {
+    const fetchMock = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ recipient_id: '456', message_id: 'mid.out' }),
+        ),
+      );
+    await expect(
+      new InstagramAdapter(namingConfig()).sendMessage(igsid('456'), 'Hola'),
+    ).resolves.toBe('mid.out');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://graph.facebook.com/v26.0/123/messages',
+      expect.objectContaining({
+        method: 'POST',
+        redirect: 'error',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer EAAtoken',
+        }) as unknown,
+        body: JSON.stringify({
+          recipient: { id: '456' },
+          message: { text: 'Hola' },
+        }),
+      }),
+    );
+    // A response for another recipient or without an ID is never taken as sent.
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ recipient_id: '999', message_id: 'x' })),
+    );
+    await expect(
+      new InstagramAdapter(namingConfig()).sendMessage(igsid('456'), 'Hola'),
+    ).rejects.toMatchObject({ outcome: 'unknown' });
+  });
+  it.each([
+    [400, 'failed'],
+    [403, 'failed'],
+    [429, 'retry'],
+    [500, 'unknown'],
+    [408, 'unknown'],
+  ] as const)('HTTP %s se clasifica %s', async (status, outcome) => {
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { code: 10 } }), { status }),
+      );
+    await expect(
+      new InstagramAdapter(namingConfig()).sendMessage(igsid('456'), 'Hola'),
+    ).rejects.toMatchObject({ outcome });
+  });
+  it('la red caída queda en estado incierto, sin reenviar', async () => {
+    jest.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('network'));
+    await expect(
+      new InstagramAdapter(namingConfig()).sendMessage(igsid('456'), 'Hola'),
+    ).rejects.toMatchObject({ outcome: 'unknown' });
+  });
+  it('rechaza sin llamar a Meta un destino inválido o un texto de más de 1000 bytes', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    const adapter = new InstagramAdapter(namingConfig());
+    for (const [address, text] of [
+      [igsid('no-numérico'), 'Hola'],
+      [{ recipientPhone: '+51987654321', recipientExternalId: null }, 'Hola'],
+      [igsid('456'), 'á'.repeat(501)],
+    ] as const)
+      await expect(adapter.sendMessage(address, text)).rejects.toMatchObject({
+        outcome: 'failed',
+      });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(exceedsTextLimit(adapter, 'á'.repeat(500))).toBe(false);
+    expect(exceedsTextLimit(adapter, 'á'.repeat(501))).toBe(true);
+    expect(exceedsTextLimit(adapter, 'a'.repeat(1001))).toBe(true);
+  });
 });
 
 describe('Instagram HTTP webhook (raw-body signature)', () => {

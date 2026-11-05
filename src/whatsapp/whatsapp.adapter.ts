@@ -2,10 +2,13 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import type { MessagingChannelAdapter } from '../messaging/channel-adapter';
 import {
   validateInboundMessage,
+  WHATSAPP_USER_ID,
+  WHATSAPP_USERNAME,
   type InboundMessageCommand,
 } from '../messaging/inbound-message.command';
 import {
   ChannelSendError,
+  type ChannelAddress,
   type ChannelDeliveryStatus,
   type ChannelRecipientSource,
   type ChannelTransport,
@@ -38,20 +41,36 @@ function record(value: unknown): Record<string, unknown> | null {
     ? (value as Record<string, unknown>)
     : null;
 }
-// Name of a webhook contact: the WhatsApp username (shown with "@") when there is one, else
-// the profile name the person chose. Lenient: a malformed contact only means "no name", it
-// never rejects the message.
-function contactName(contact: Record<string, unknown> | null): string | null {
+interface WhatsAppProfile {
+  /** Username without "@", only if the user adopted one. */
+  username?: string;
+  /** Profile name the person chose (often a nickname). */
+  name?: string;
+}
+// What a webhook contact says about its sender. Lenient: a malformed contact only means
+// "unknown", it never rejects the message.
+function contactProfile(
+  contact: Record<string, unknown> | null,
+): WhatsAppProfile | undefined {
   const profile = record(contact?.profile);
-  if (typeof profile?.username === 'string') {
-    const handle = profile.username.trim().replace(/^@/, '');
-    if (/^[A-Za-z0-9._]{1,35}$/.test(handle)) return `@${handle}`;
-  }
-  if (typeof profile?.name === 'string') {
-    const name = profile.name.trim().slice(0, 100).trim();
-    if (name) return name;
-  }
-  return null;
+  if (!profile) return undefined;
+  const username =
+    typeof profile.username === 'string'
+      ? profile.username.trim().replace(/^@/, '')
+      : '';
+  const name =
+    typeof profile.name === 'string'
+      ? profile.name.trim().slice(0, 100).trim()
+      : '';
+  return {
+    ...(WHATSAPP_USERNAME.test(username) ? { username } : {}),
+    ...(name ? { name } : {}),
+  };
+}
+// Meta issues a new BSUID when a user changes their number and reports the previous one.
+export interface WhatsAppUserIdChange {
+  previous: string;
+  current: string;
 }
 function timestamp(value: unknown): Date {
   const seconds = text(value, 12);
@@ -74,7 +93,6 @@ export class WhatsAppAdapter
   readonly maxTextLength = 4096;
   readonly windowClosedMessage =
     'Ventana de WhatsApp cerrada; se requiere una plantilla aprobada';
-  readonly recipientField = 'recipientPhone' as const;
   constructor(private readonly config: WhatsAppConfig) {}
   get enabled() {
     return this.config.enabled;
@@ -85,8 +103,15 @@ export class WhatsAppAdapter
   assertEnabled() {
     this.config.assertEnabled();
   }
-  recipientOf(customer: ChannelRecipientSource) {
-    return customer.normalizedPhone;
+  // Both are candidates: the reply goes to the one the customer wrote from in the last 24
+  // hours, phone first (see ChannelAddress).
+  recipientOf(customer: ChannelRecipientSource): ChannelAddress | null {
+    return customer.normalizedPhone || customer.whatsappUserId
+      ? {
+          recipientPhone: customer.normalizedPhone,
+          recipientExternalId: customer.whatsappUserId,
+        }
+      : null;
   }
   parseInboundEvent(event: unknown): Promise<InboundMessageCommand[]> {
     return Promise.resolve(this.parse(event).messages);
@@ -95,8 +120,7 @@ export class WhatsAppAdapter
     const messages: InboundMessageCommand[] = [];
     const statuses: ChannelDeliveryStatus[] = [];
     const rejected: string[] = [];
-    // Sender name of each parsed message (by externalMessageId), from value.contacts.
-    const names = new Map<string, string>();
+    const userIdChanges: WhatsAppUserIdChange[] = [];
     const guard = (raw: unknown, operation: () => void) => {
       try {
         operation();
@@ -121,27 +145,61 @@ export class WhatsAppAdapter
                 object(value.metadata).phone_number_id !== this.config.phoneId
               )
                 return;
-              const senders = new Map<string, string>();
+              // Senders described in value.contacts, by BSUID (user_id) and by phone (wa_id).
+              const senders = new Map<string, WhatsAppProfile>();
               const contacts: unknown[] = Array.isArray(value.contacts)
                 ? value.contacts
                 : [];
               for (const raw of contacts) {
                 const contact = record(raw);
-                const name = contactName(contact);
-                if (name && typeof contact?.wa_id === 'string')
-                  senders.set(contact.wa_id, name);
+                const profile = contactProfile(contact);
+                if (!profile) continue;
+                if (typeof contact?.user_id === 'string')
+                  senders.set(`user:${contact.user_id}`, profile);
+                if (typeof contact?.wa_id === 'string')
+                  senders.set(`phone:${contact.wa_id}`, profile);
               }
               for (const raw of list(value.messages))
                 guard(raw, () => {
                   const message = object(raw);
-                  const from = text(message.from, 15);
-                  if (!/^[1-9]\d{6,14}$/.test(from))
+                  // Meta omits `from` (the phone) for some users with a username, but always
+                  // sends their business-scoped user ID in `from_user_id`.
+                  const from = optionalText(message.from, 15);
+                  if (from !== undefined && !/^[1-9]\d{6,14}$/.test(from))
                     throw new BadRequestException();
+                  const userId = optionalText(message.from_user_id, 160);
+                  if (userId !== undefined && !WHATSAPP_USER_ID.test(userId))
+                    throw new BadRequestException();
+                  if (from === undefined && userId === undefined)
+                    throw new BadRequestException();
+                  if (message.type === 'system') {
+                    const system = record(message.system);
+                    if (system?.type === 'user_changed_user_id') {
+                      const previous = text(system.previous_user_id, 160);
+                      if (!userId || !WHATSAPP_USER_ID.test(previous))
+                        throw new BadRequestException();
+                      userIdChanges.push({ previous, current: userId });
+                      return;
+                    }
+                  }
+                  const profile =
+                    (userId && senders.get(`user:${userId}`)) ||
+                    (from && senders.get(`phone:${from}`)) ||
+                    undefined;
                   const base = {
                     channel: this.channel,
                     providerAccountId: this.config.phoneId,
                     externalMessageId: text(message.id),
-                    contact: { phone: `+${from}` },
+                    contact: {
+                      ...(from ? { phone: `+${from}` } : {}),
+                      ...(userId ? { whatsappUserId: userId } : {}),
+                      ...(profile?.username
+                        ? { whatsappUsername: profile.username }
+                        : {}),
+                      ...(profile?.name
+                        ? { whatsappProfileName: profile.name }
+                        : {}),
+                    },
                     occurredAt: timestamp(message.timestamp).toISOString(),
                   };
                   let command: InboundMessageCommand;
@@ -178,8 +236,6 @@ export class WhatsAppAdapter
                     };
                   }
                   messages.push(validateInboundMessage(command));
-                  const name = senders.get(from);
-                  if (name) names.set(base.externalMessageId, name);
                 });
               for (const raw of list(value.statuses))
                 guard(raw, () => {
@@ -202,10 +258,17 @@ export class WhatsAppAdapter
             });
         });
     });
-    return { messages, statuses, rejected, names };
+    return { messages, statuses, rejected, userIdChanges };
   }
-  async sendMessage(to: string, content: string): Promise<string> {
+  async sendMessage(address: ChannelAddress, content: string): Promise<string> {
     this.config.assertEnabled();
+    // Meta addresses a BSUID with `recipient`; with both, it would use `to` anyway.
+    const target = address.recipientPhone
+      ? { to: address.recipientPhone.replace(/^\+/, '') }
+      : address.recipientExternalId
+        ? { recipient: address.recipientExternalId }
+        : null;
+    if (!target) throw new ChannelSendError('failed');
     let response: Response;
     try {
       response = await fetch(
@@ -220,7 +283,7 @@ export class WhatsAppAdapter
           },
           body: JSON.stringify({
             messaging_product: 'whatsapp',
-            to: to.replace(/^\+/, ''),
+            ...target,
             type: 'text',
             text: { body: content },
           }),

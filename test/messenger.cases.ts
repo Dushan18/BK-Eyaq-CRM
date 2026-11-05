@@ -218,7 +218,10 @@ export function registerMessengerTests(c: Context) {
       ]).expect(200);
       await c.app().get(MessageStatusService).reconcileOnce();
       await c.app().get(OutboundMessagesService).process(outbound.id);
-      expect(send).toHaveBeenCalledWith(psid, 'Respuesta Messenger');
+      expect(send).toHaveBeenCalledWith(
+        { recipientPhone: null, recipientExternalId: psid },
+        'Respuesta Messenger',
+      );
       await c.prisma().messageStatusEvent.updateMany({
         where: { externalMessageId: mid },
         data: { availableAt: new Date(0) },

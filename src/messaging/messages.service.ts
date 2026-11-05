@@ -28,9 +28,16 @@ export class MessagesService {
   // Single ingestion path for every channel; adapters only translate provider events.
   async ingestInboundMessage(input: unknown) {
     const command = validateInboundMessage(input);
-    const { externalId, ...contactInput } = command.contact;
+    const {
+      externalId,
+      whatsappUserId,
+      whatsappUsername,
+      whatsappProfileName,
+      ...contactInput
+    } = command.contact;
     const contact = normalizeContact(contactInput, {
-      allowMissingContact: externalId !== undefined,
+      allowMissingContact:
+        externalId !== undefined || whatsappUserId !== undefined,
     });
     return this.transactions.run(async (tx) => {
       const existing = await tx.message.findUnique({
@@ -47,7 +54,11 @@ export class MessagesService {
           conversation: {
             select: {
               customer: {
-                select: { normalizedPhone: true, normalizedEmail: true },
+                select: {
+                  normalizedPhone: true,
+                  normalizedEmail: true,
+                  whatsappUserId: true,
+                },
               },
             },
           },
@@ -62,18 +73,21 @@ export class MessagesService {
             ? existing.direction === 'INBOUND' &&
               providerAccountId === command.providerAccountId &&
               recipientExternalId === externalId
-            : ((contact.normalizedPhone &&
+            : (whatsappUserId !== undefined &&
+                existing.direction === 'INBOUND' &&
+                identity.whatsappUserId === whatsappUserId) ||
+              (((contact.normalizedPhone &&
                 contact.normalizedPhone === identity.normalizedPhone) ||
                 (contact.normalizedEmail &&
                   contact.normalizedEmail === identity.normalizedEmail)) &&
-              !(
-                (contact.normalizedPhone &&
-                  identity.normalizedPhone &&
-                  contact.normalizedPhone !== identity.normalizedPhone) ||
-                (contact.normalizedEmail &&
-                  identity.normalizedEmail &&
-                  contact.normalizedEmail !== identity.normalizedEmail)
-              );
+                !(
+                  (contact.normalizedPhone &&
+                    identity.normalizedPhone &&
+                    contact.normalizedPhone !== identity.normalizedPhone) ||
+                  (contact.normalizedEmail &&
+                    identity.normalizedEmail &&
+                    contact.normalizedEmail !== identity.normalizedEmail)
+                ));
         if (!same) throw new ConflictException(INBOUND_IDENTITY_CONFLICT);
         const {
           conversation: _conversation,
@@ -96,10 +110,30 @@ export class MessagesService {
               },
               tx,
             )
-          : await this.customers.findOrCreateByContact(
-              { ...contactInput, sourceChannel: command.channel },
-              tx,
-            );
+          : whatsappUserId !== undefined ||
+              whatsappUsername !== undefined ||
+              whatsappProfileName !== undefined
+            ? await this.customers.findOrCreateByWhatsApp(
+                {
+                  phone: contactInput.phone ?? null,
+                  userId: whatsappUserId ?? null,
+                  // The adapter only sends these when the webhook described the sender.
+                  ...(whatsappUsername !== undefined ||
+                  whatsappProfileName !== undefined
+                    ? {
+                        profile: {
+                          username: whatsappUsername ?? null,
+                          name: whatsappProfileName ?? null,
+                        },
+                      }
+                    : {}),
+                },
+                tx,
+              )
+            : await this.customers.findOrCreateByContact(
+                { ...contactInput, sourceChannel: command.channel },
+                tx,
+              );
       const conversation = await tx.conversation.upsert({
         where: {
           customerId_channel: {
@@ -138,7 +172,7 @@ export class MessagesService {
           direction: 'INBOUND',
           providerAccountId: command.providerAccountId,
           recipientPhone: contact.normalizedPhone,
-          recipientExternalId: externalId ?? null,
+          recipientExternalId: externalId ?? whatsappUserId ?? null,
           status: 'RECEIVED',
           type: command.type,
           content: command.content,

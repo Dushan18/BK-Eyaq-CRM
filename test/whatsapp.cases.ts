@@ -361,7 +361,7 @@ export function registerWhatsAppTests(c: Context) {
       await processor().process(outbound.id);
       expect(send).toHaveBeenCalledTimes(1);
       expect(send).toHaveBeenCalledWith(
-        `+${phone}`,
+        { recipientPhone: `+${phone}`, recipientExternalId: null },
         'Hola, somos Sabor Mágico Grill.',
       );
       const stored = await db().message.findUniqueOrThrow({
@@ -547,13 +547,72 @@ export function registerWhatsAppTests(c: Context) {
         data: { normalizedPhone: `+519${randomInt(10000000, 99999999)}` },
       });
       await processor().process(outbound.id);
-      expect(send).toHaveBeenCalledWith(`+${phone}`, expect.any(String));
+      expect(send).toHaveBeenCalledWith(
+        { recipientPhone: `+${phone}`, recipientExternalId: null },
+        expect.any(String),
+      );
       await request(c.server())
         .post(`/conversations/${row.conversationId}/messages`)
         .set('Authorization', c.auth())
         .set('Idempotency-Key', randomUUID())
         .send({ type: 'TEXT', content: 'Otro' })
         .expect(409);
+    });
+    it('sin número (Meta lo oculta): guarda ID, usuario y apodo, y responde al ID', async () => {
+      const userId = `PE.${randomUUID().replaceAll('-', '')}`;
+      const username = `ana.${randomInt(100000, 999999)}`;
+      const message = (extra: object = {}) => ({
+        id: `wamid.${randomUUID()}`,
+        from_user_id: userId,
+        timestamp: String(Math.floor(Date.now() / 1000)),
+        type: 'text',
+        text: { body: 'Hola sin número' },
+        ...extra,
+      });
+      const withContact = (body: object, waId?: string) => {
+        const event = payload([body]);
+        Object.assign(event.entry[0].changes[0].value, {
+          contacts: [
+            {
+              user_id: userId,
+              ...(waId ? { wa_id: waId } : {}),
+              profile: { name: 'Ana Sin Número', username },
+            },
+          ],
+        });
+        return event;
+      };
+      await webhook(withContact(message())).expect(200);
+      const customer = await db().customer.findUniqueOrThrow({
+        where: { whatsappUserId: userId },
+        include: { conversations: true },
+      });
+      expect(customer).toMatchObject({
+        phone: null,
+        sourceChannel: 'WHATSAPP',
+        firstName: `@${username}`,
+        whatsappUsername: username,
+        whatsappProfileName: 'Ana Sin Número',
+      });
+      const conversationId = customer.conversations[0].id;
+      await processor().process((await enqueue(conversationId)).id);
+      expect(send).toHaveBeenLastCalledWith(
+        { recipientPhone: null, recipientExternalId: userId },
+        expect.any(String),
+      );
+      // The same account writes later with its number: same customer, reply to the phone.
+      const phone = `519${randomInt(10000000, 99999999)}`;
+      await webhook(withContact(message({ from: phone }), phone)).expect(200);
+      expect(
+        await db().customer.findUniqueOrThrow({
+          where: { whatsappUserId: userId },
+        }),
+      ).toMatchObject({ id: customer.id, phone: `+${phone}` });
+      await processor().process((await enqueue(conversationId)).id);
+      expect(send).toHaveBeenLastCalledWith(
+        { recipientPhone: `+${phone}`, recipientExternalId: null },
+        expect.any(String),
+      );
     });
     it('Redis caído deja envío durable y dispatcher recupera dirección OUTBOUND', async () => {
       const { row } = await inbound();

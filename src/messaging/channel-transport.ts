@@ -28,6 +28,14 @@ export interface ChannelRecipientSource {
   normalizedPhone: string | null;
   providerAccountId: string | null;
   externalContactId: string | null;
+  whatsappUserId: string | null;
+}
+// Where a reply can go. recipientOf may return both fields (WhatsApp: phone and BSUID) as
+// candidates; the outbox keeps only the first one, phone first, that wrote in the last 24
+// hours, so a reply never goes to an address the customer has not written from.
+export interface ChannelAddress {
+  recipientPhone: string | null;
+  recipientExternalId: string | null;
 }
 // Everything the outbox needs from a provider, so the core never branches on channel names.
 export interface ChannelTransport {
@@ -36,14 +44,25 @@ export interface ChannelTransport {
   readonly errorPrefix: string;
   readonly label: string;
   readonly maxTextLength: number;
+  /** UTF-8 byte limit, for channels that count bytes (Instagram). */
+  readonly maxTextBytes?: number;
   readonly windowClosedMessage: string;
-  /** Message column that stores the customer's address on this channel. */
-  readonly recipientField: 'recipientPhone' | 'recipientExternalId';
   readonly enabled: boolean;
   readonly providerAccountId: string;
   assertEnabled(): void;
-  recipientOf(customer: ChannelRecipientSource): string | null;
-  sendMessage(to: string, content: string): Promise<string>;
+  recipientOf(customer: ChannelRecipientSource): ChannelAddress | null;
+  sendMessage(to: ChannelAddress, content: string): Promise<string>;
+}
+
+export function exceedsTextLimit(
+  transport: Pick<ChannelTransport, 'maxTextLength' | 'maxTextBytes'>,
+  content: string,
+) {
+  return (
+    content.length > transport.maxTextLength ||
+    (transport.maxTextBytes !== undefined &&
+      Buffer.byteLength(content, 'utf8') > transport.maxTextBytes)
+  );
 }
 
 export const CHANNEL_TRANSPORTS = Symbol('CHANNEL_TRANSPORTS');

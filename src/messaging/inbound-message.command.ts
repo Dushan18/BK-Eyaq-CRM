@@ -20,16 +20,24 @@ export interface InboundMessageCommand {
   externalConversationId?: string;
   providerAccountId?: string;
   // externalId: a provider-scoped identity (a Messenger PSID) within providerAccountId.
+  // whatsapp*: WhatsApp's business-scoped user ID (sent even when the phone is hidden),
+  // username (without "@") and profile name.
   contact: ContactInput & {
     firstName?: string;
     lastName?: string;
     externalId?: string;
+    whatsappUserId?: string;
+    whatsappUsername?: string;
+    whatsappProfileName?: string;
   };
   type: MessageType;
   content?: string;
   occurredAt?: string;
   attachments?: InboundAttachment[];
 }
+// BSUID: country prefix plus up to 128 alphanumerics ("US.13491208655302741918").
+export const WHATSAPP_USER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+export const WHATSAPP_USERNAME = /^[A-Za-z0-9._]{1,40}$/;
 const invalid = (): never => {
   throw new BadRequestException('Comando de mensaje inválido');
 };
@@ -78,6 +86,9 @@ export function validateInboundMessage(input: unknown): InboundMessageCommand {
     'firstName',
     'lastName',
     'externalId',
+    'whatsappUserId',
+    'whatsappUsername',
+    'whatsappProfileName',
   ]);
   const parsedContact = {
     phone: text(contact.phone, 80),
@@ -86,8 +97,31 @@ export function validateInboundMessage(input: unknown): InboundMessageCommand {
     firstName: text(contact.firstName, 100),
     lastName: text(contact.lastName, 100),
     externalId: text(contact.externalId, 80),
+    whatsappUserId: text(contact.whatsappUserId, 160),
+    whatsappUsername: text(contact.whatsappUsername, 40),
+    whatsappProfileName: text(contact.whatsappProfileName, 100),
   };
   const externalId = parsedContact.externalId;
+  const whatsappUserId = parsedContact.whatsappUserId;
+  // WhatsApp identity only exists on WhatsApp messages, which carry nothing else but the
+  // phone: an email or a CRM name there would be silently ignored, so it is rejected.
+  if (
+    (whatsappUserId !== undefined ||
+      parsedContact.whatsappUsername !== undefined ||
+      parsedContact.whatsappProfileName !== undefined) &&
+    (data.channel !== 'WHATSAPP' ||
+      externalId !== undefined ||
+      parsedContact.email !== undefined ||
+      parsedContact.firstName !== undefined ||
+      parsedContact.lastName !== undefined)
+  )
+    invalid();
+  if (
+    (whatsappUserId !== undefined && !WHATSAPP_USER_ID.test(whatsappUserId)) ||
+    (parsedContact.whatsappUsername !== undefined &&
+      !WHATSAPP_USERNAME.test(parsedContact.whatsappUsername))
+  )
+    invalid();
   // A provider identity is never a phone number in disguise: it is numeric (as the
   // customers CHECK constraint requires), scoped to its account and never mixed with one.
   if (
@@ -100,7 +134,8 @@ export function validateInboundMessage(input: unknown): InboundMessageCommand {
   )
     invalid();
   normalizeContact(parsedContact, {
-    allowMissingContact: externalId !== undefined,
+    allowMissingContact:
+      externalId !== undefined || whatsappUserId !== undefined,
   });
   const content = text(data.content, 16000);
   const occurredAt = text(data.occurredAt, 40);

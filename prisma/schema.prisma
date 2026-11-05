@@ -125,7 +125,7 @@ model Conversation {
 }
 
 model Message {
-  recipientExternalId String?             @db.VarChar(80)
+  recipientExternalId String?             @db.VarChar(160)
   sourcedDrafts      SamantaDraft[] @relation("DraftSource")
   approvedDraft      SamantaDraft?  @relation("DraftOutbound")
   id                 String              @id @default(uuid())
@@ -599,6 +599,11 @@ model Customer {
   // Provider-scoped identities are not phone numbers or fabricated emails.
   providerAccountId   String?              @db.VarChar(80)
   externalContactId   String?              @db.VarChar(80)
+  // WhatsApp: the business-scoped user ID (BSUID) Meta sends with every message, even when
+  // it hides the phone number, plus the latest username (without "@") and profile name.
+  whatsappUserId      String?              @unique @db.VarChar(160)
+  whatsappUsername    String?              @db.VarChar(40)
+  whatsappProfileName String?              @db.VarChar(100)
   conversations       Conversation[]
   reservationRequests ReservationRequest[]
   reservations        Reservation[]

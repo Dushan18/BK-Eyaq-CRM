@@ -34,6 +34,10 @@ const settings = {
   META_APP_SECRET: 'fake-test-secret',
 };
 const config = () => new WhatsAppConfig(new ConfigService(settings));
+const toPhone = (phone: string) => ({
+  recipientPhone: phone,
+  recipientExternalId: null,
+});
 const message = (extra: object = {}) => ({
   id: 'wamid.test',
   from: '51987654321',
@@ -164,7 +168,10 @@ describe('WhatsApp configuración y adapter', () => {
         }),
       );
       expect(
-        await new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
+        await new WhatsAppAdapter(config()).sendMessage(
+          toPhone('+51987654321'),
+          'Hola',
+        ),
       ).toBe('wamid.out');
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe('https://graph.facebook.com/v25.0/123/messages');
@@ -190,13 +197,19 @@ describe('WhatsApp configuración y adapter', () => {
         }),
       );
       await expect(
-        new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
+        new WhatsAppAdapter(config()).sendMessage(
+          toPhone('+51987654321'),
+          'Hola',
+        ),
       ).rejects.toMatchObject({ outcome });
     });
     it('timeout/red queda UNKNOWN sin filtrar excepción', async () => {
       fetchMock.mockRejectedValue(new Error('Authorization: SECRET'));
       await expect(
-        new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
+        new WhatsAppAdapter(config()).sendMessage(
+          toPhone('+51987654321'),
+          'Hola',
+        ),
       ).rejects.toEqual(new ChannelSendError('unknown'));
     });
     it.each([
@@ -222,7 +235,10 @@ describe('WhatsApp configuración y adapter', () => {
           ),
         );
         await expect(
-          new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
+          new WhatsAppAdapter(config()).sendMessage(
+            toPhone('+51987654321'),
+            'Hola',
+          ),
         ).rejects.toMatchObject({
           outcome,
           diagnostic: {
@@ -238,47 +254,88 @@ describe('WhatsApp configuración y adapter', () => {
     it('respuesta exitosa sin wamid no permite reenvío automático', async () => {
       fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
       await expect(
-        new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
+        new WhatsAppAdapter(config()).sendMessage(
+          toPhone('+51987654321'),
+          'Hola',
+        ),
       ).rejects.toMatchObject({ outcome: 'unknown' });
     });
   });
 });
 
-describe('Nombre del cliente de WhatsApp', () => {
-  const withContacts = (contacts: unknown, messages = [message()]) => {
+describe('Identidad y nombre del cliente de WhatsApp', () => {
+  const withContacts = (
+    contacts: unknown,
+    messages: unknown[] = [message()],
+  ) => {
     const payload = event(messages);
     Object.assign(payload.entry[0].changes[0].value, { contacts });
     return payload;
   };
-  const contact = (profile: unknown, waId = '51987654321') => ({
-    wa_id: waId,
+  const contact = (
+    profile: unknown,
+    waId: string | undefined = '51987654321',
+    userId?: string,
+  ) => ({
+    ...(waId ? { wa_id: waId } : {}),
+    ...(userId ? { user_id: userId } : {}),
     profile,
   });
-  const namesOf = (payload: unknown) =>
-    Object.fromEntries(new WhatsAppAdapter(config()).parse(payload).names);
-  it('usa el nombre de usuario con @ y, si no hay, el nombre del perfil', () => {
-    expect(
-      namesOf(withContacts([contact({ name: 'Ana', username: 'ana.q' })])),
-    ).toEqual({ 'wamid.test': '@ana.q' });
-    expect(namesOf(withContacts([contact({ username: '@ana_q' })]))).toEqual({
-      'wamid.test': '@ana_q',
+  const parse = (payload: unknown) =>
+    new WhatsAppAdapter(config()).parse(payload);
+  it('guarda número, ID de WhatsApp, nombre de usuario y apodo del remitente', () => {
+    const result = parse(
+      withContacts(
+        [contact({ name: 'Ana', username: 'ana.q' }, '51987654321', 'PE.111')],
+        [message({ from_user_id: 'PE.111' })],
+      ),
+    );
+    expect(result.rejected).toEqual([]);
+    expect(result.messages[0].contact).toEqual({
+      phone: '+51987654321',
+      whatsappUserId: 'PE.111',
+      whatsappUsername: 'ana.q',
+      whatsappProfileName: 'Ana',
+    });
+  });
+  it('acepta un mensaje sin número cuando Meta lo oculta: lo identifica el ID', () => {
+    const result = parse(
+      withContacts(
+        [contact({ name: 'Ana', username: 'ana.q' }, undefined, 'PE.111')],
+        [message({ from: undefined, from_user_id: 'PE.111' })],
+      ),
+    );
+    expect(result.rejected).toEqual([]);
+    expect(result.messages[0].contact).toEqual({
+      whatsappUserId: 'PE.111',
+      whatsappUsername: 'ana.q',
+      whatsappProfileName: 'Ana',
+    });
+  });
+  it('quita la @ del nombre de usuario y descarta uno inválido sin perder el apodo', () => {
+    const contactOf = (profile: unknown) =>
+      parse(withContacts([contact(profile)])).messages[0].contact;
+    expect(contactOf({ username: '@ana_q' })).toMatchObject({
+      whatsappUsername: 'ana_q',
     });
     expect(
-      namesOf(withContacts([contact({ name: '  Mamá Rosa 🌸  ' })])),
-    ).toEqual({ 'wamid.test': 'Mamá Rosa 🌸' });
-    expect(
-      namesOf(withContacts([contact({ name: 'Ana', username: 'no válido' })])),
-    ).toEqual({ 'wamid.test': 'Ana' });
+      contactOf({ name: '  Mamá Rosa 🌸  ', username: 'no válido' }),
+    ).toEqual({
+      phone: '+51987654321',
+      whatsappProfileName: 'Mamá Rosa 🌸',
+    });
   });
-  it('asigna cada nombre al remitente de su mensaje', () => {
-    expect(
-      namesOf(
-        withContacts(
-          [contact({ name: 'Ana' }), contact({ name: 'Luis' }, '51911111111')],
-          [message(), message({ id: 'wamid.luis', from: '51911111111' })],
-        ),
+  it('asigna cada perfil al remitente de su mensaje', () => {
+    const result = parse(
+      withContacts(
+        [contact({ name: 'Ana' }), contact({ name: 'Luis' }, '51911111111')],
+        [message(), message({ id: 'wamid.luis', from: '51911111111' })],
       ),
-    ).toEqual({ 'wamid.test': 'Ana', 'wamid.luis': 'Luis' });
+    );
+    expect(result.messages.map((m) => m.contact.whatsappProfileName)).toEqual([
+      'Ana',
+      'Luis',
+    ]);
   });
   it.each([
     ['sin contacts', undefined],
@@ -287,48 +344,131 @@ describe('Nombre del cliente de WhatsApp', () => {
     ['sin perfil', [{ wa_id: '51987654321' }]],
     ['perfil vacío', [contact({ name: '   ', username: '' })]],
     ['otro remitente', [contact({ name: 'Otra persona' }, '51900000000')]],
-  ])('%s: el mensaje se guarda igual, sin nombre ni rechazo', (_, contacts) => {
-    const result = new WhatsAppAdapter(config()).parse(withContacts(contacts));
-    expect(result.messages).toHaveLength(1);
+  ])('%s: el mensaje se guarda igual, solo con el número', (_, contacts) => {
+    const result = parse(withContacts(contacts));
     expect(result.rejected).toEqual([]);
-    expect(result.names.size).toBe(0);
+    expect(result.messages[0].contact).toEqual({ phone: '+51987654321' });
   });
-  it('nombra solo a clientes sin nombre, una vez, sin depender de Meta', async () => {
+  it.each([
+    ['sin número ni ID', { from: undefined }],
+    ['ID inválido', { from_user_id: 'no es un id' }],
+    ['número inválido aunque haya ID', { from: '0123', from_user_id: 'PE.1' }],
+  ])('rechaza un mensaje %s', (_, extra) => {
+    const result = parse(event([message(extra)]));
+    expect(result.messages).toEqual([]);
+    expect(result.rejected).toHaveLength(1);
+  });
+  it('un cambio de ID de WhatsApp no crea mensaje: registra el anterior y el nuevo', () => {
+    const result = parse(
+      event([
+        message({
+          type: 'system',
+          from: undefined,
+          from_user_id: 'PE.new',
+          system: { type: 'user_changed_user_id', previous_user_id: 'PE.old' },
+        }),
+      ]),
+    );
+    expect(result.messages).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.userIdChanges).toEqual([
+      { previous: 'PE.old', current: 'PE.new' },
+    ]);
+  });
+  it('responde al número si lo hay y al ID de WhatsApp si no', async () => {
+    const adapter = new WhatsAppAdapter(config());
+    const customer = {
+      normalizedPhone: '+51987654321',
+      providerAccountId: null,
+      externalContactId: null,
+      whatsappUserId: 'PE.111',
+    };
+    expect(adapter.recipientOf(customer)).toEqual({
+      recipientPhone: '+51987654321',
+      recipientExternalId: 'PE.111',
+    });
+    expect(adapter.recipientOf({ ...customer, normalizedPhone: null })).toEqual(
+      { recipientPhone: null, recipientExternalId: 'PE.111' },
+    );
+    expect(
+      adapter.recipientOf({
+        ...customer,
+        normalizedPhone: null,
+        whatsappUserId: null,
+      }),
+    ).toBeNull();
+    const fetchMock = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ messages: [{ id: 'wamid.out' }] })),
+        ),
+      );
+    const bodies = async (address: {
+      recipientPhone: string | null;
+      recipientExternalId: string | null;
+    }) => {
+      await adapter.sendMessage(address, 'Hola');
+      const [, init] = fetchMock.mock.lastCall as [string, RequestInit];
+      return JSON.parse(init.body as string) as Record<string, unknown>;
+    };
+    const both = await bodies(adapter.recipientOf(customer)!);
+    expect(both).toMatchObject({ to: '51987654321' });
+    expect(both).not.toHaveProperty('recipient');
+    const onlyId = await bodies({
+      recipientPhone: null,
+      recipientExternalId: 'PE.111',
+    });
+    expect(onlyId).toMatchObject({ recipient: 'PE.111', type: 'text' });
+    expect(onlyId).not.toHaveProperty('to');
+    fetchMock.mockRestore();
+  });
+  it('mueve el ID cambiado antes de guardar y nombra con @usuario o apodo, sin Meta', async () => {
     const fetchMock = jest.spyOn(globalThis, 'fetch');
     const setNameIfMissing = jest.fn().mockResolvedValue(true);
+    const replaceWhatsAppUserId = jest.fn().mockResolvedValue(true);
     const stored = (
       id: string,
       firstName: string | null,
-      externalMessageId: string,
+      contact: Record<string, string>,
     ) => ({
-      command: { externalMessageId, contact: { phone: '+51987654321' } },
+      command: { externalMessageId: `wamid.${id}`, contact },
       customer: { id, firstName, lastName: null },
     });
-    const payload = withContacts(
-      [contact({ name: 'Ana' }), contact({ name: 'Luis' }, '51911111111')],
-      [
+    const ingestFromProvider = jest.fn().mockResolvedValue([
+      stored('ana', null, {
+        whatsappUsername: 'ana.q',
+        whatsappProfileName: 'Ana',
+      }),
+      stored('ana', null, { whatsappUsername: 'ana.q' }),
+      stored('rosa', null, { whatsappProfileName: 'Mamá Rosa' }),
+      stored('luis', 'Nombre del CRM', { whatsappProfileName: 'Luis' }),
+      stored('sin-perfil', null, { phone: '+51911111111' }),
+    ]);
+    const raw = JSON.stringify(
+      event([
+        message({
+          type: 'system',
+          from: undefined,
+          from_user_id: 'PE.new',
+          system: { type: 'user_changed_user_id', previous_user_id: 'PE.old' },
+        }),
         message(),
-        message({ id: 'wamid.two' }),
-        message({ id: 'wamid.luis', from: '51911111111' }),
-      ],
+      ]),
     );
-    const raw = JSON.stringify(payload);
     await expect(
       new WhatsAppService(
         config(),
         new WhatsAppAdapter(config()),
         {
-          ingestFromProvider: jest
-            .fn()
-            .mockResolvedValue([
-              stored('ana', null, 'wamid.test'),
-              stored('ana', null, 'wamid.two'),
-              stored('luis', 'Nombre del CRM', 'wamid.luis'),
-            ]),
+          ingestFromProvider,
           quarantine: jest.fn(),
         } as unknown as MessagesService,
         { accept: jest.fn() } as unknown as MessageStatusService,
-        { setNameIfMissing } as unknown as CustomersService,
+        {
+          setNameIfMissing,
+          replaceWhatsAppUserId,
+        } as unknown as CustomersService,
       ).receive(
         Buffer.from(raw),
         'sha256=' +
@@ -337,7 +477,14 @@ describe('Nombre del cliente de WhatsApp', () => {
             .digest('hex'),
       ),
     ).resolves.toEqual({ received: true });
-    expect(setNameIfMissing.mock.calls).toEqual([['ana', 'Ana']]);
+    expect(replaceWhatsAppUserId).toHaveBeenCalledWith('PE.old', 'PE.new');
+    expect(replaceWhatsAppUserId.mock.invocationCallOrder[0]).toBeLessThan(
+      ingestFromProvider.mock.invocationCallOrder[0],
+    );
+    expect(setNameIfMissing.mock.calls).toEqual([
+      ['ana', '@ana.q'],
+      ['rosa', 'Mamá Rosa'],
+    ]);
     expect(fetchMock).not.toHaveBeenCalled();
     fetchMock.mockRestore();
   });

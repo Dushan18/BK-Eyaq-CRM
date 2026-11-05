@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import type { Prisma } from '../../generated/prisma/client';
@@ -24,6 +25,8 @@ const customerSelect = {
   phoneCountry: true,
   email: true,
   sourceChannel: true,
+  whatsappUsername: true,
+  whatsappProfileName: true,
   status: true,
   firstContactAt: true,
   lastContactAt: true,
@@ -31,6 +34,15 @@ const customerSelect = {
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.CustomerSelect;
+
+export interface WhatsAppContact {
+  /** As received from WhatsApp ("+51987654321"); null when Meta hides it. */
+  phone: string | null;
+  /** Business-scoped user ID; null only in payloads that predate it. */
+  userId: string | null;
+  /** Present when the webhook described the sender; replaces the stored values. */
+  profile?: { username: string | null; name: string | null };
+}
 
 const interestSelect = {
   id: true,
@@ -51,8 +63,27 @@ const interestSelect = {
 
 type NormalizedContact = ReturnType<typeof normalizeContact>;
 
+// Search terms for the WhatsApp username ("@ana.q" or "ana.q") and profile name.
+export function whatsappSearch(search: string): Prisma.CustomerWhereInput[] {
+  const username = search.replace(/^@/, '');
+  return [
+    ...(username
+      ? [
+          {
+            whatsappUsername: {
+              contains: username,
+              mode: 'insensitive' as const,
+            },
+          },
+        ]
+      : []),
+    { whatsappProfileName: { contains: search, mode: 'insensitive' } },
+  ];
+}
+
 @Injectable()
 export class CustomersService {
+  private readonly logger = new Logger(CustomersService.name);
   constructor(private readonly prisma: PrismaService) {}
 
   async create(dto: CreateCustomerDto) {
@@ -91,6 +122,7 @@ export class CustomersService {
               { email: { contains: search, mode: 'insensitive' } },
               { normalizedEmail: { contains: search.toLowerCase() } },
               ...(digits ? [{ normalizedPhone: { contains: digits } }] : []),
+              ...whatsappSearch(search),
             ],
           }
         : {}),
@@ -147,6 +179,7 @@ export class CustomersService {
           sourceChannel: true,
           providerAccountId: true,
           externalContactId: true,
+          whatsappUserId: true,
         },
       });
       if (!current) throw new NotFoundException('Cliente no encontrado');
@@ -175,7 +208,8 @@ export class CustomersService {
                   : current.phoneCountry,
           email: dto.email !== undefined ? dto.email : current.email,
         },
-        { allowMissingContact: providerIdentity },
+        // A WhatsApp customer known by its BSUID stays reachable without phone or email.
+        { allowMissingContact: providerIdentity || !!current.whatsappUserId },
       );
       if (dto.phone === null && dto.phoneCountry != null) {
         throw new BadRequestException('phoneCountry requiere un teléfono');
@@ -302,6 +336,113 @@ export class CustomersService {
       });
     };
     return transaction ? operation(transaction) : this.transaction(operation);
+  }
+
+  // WhatsApp senders are recognized by BSUID first (Meta may hide the phone, never the
+  // BSUID), then by phone, so existing phone customers are not duplicated. The BSUID proves
+  // it is the same WhatsApp account, so the phone it writes from replaces a stored one unless
+  // another customer has it: customers are never merged automatically. The latest username
+  // and profile name are kept on every message; the CRM name is never touched here.
+  async findOrCreateByWhatsApp(
+    input: WhatsAppContact,
+    transaction?: Prisma.TransactionClient,
+  ) {
+    const contact = normalizeContact(
+      { phone: input.phone },
+      { allowMissingContact: input.userId !== null },
+    );
+    const profile = input.profile
+      ? {
+          whatsappUsername: input.profile.username,
+          whatsappProfileName: input.profile.name,
+        }
+      : {};
+    const phone = {
+      phone: contact.phone,
+      phoneCountry: contact.phoneCountry,
+      normalizedPhone: contact.normalizedPhone,
+    };
+    const operation = async (tx: Prisma.TransactionClient) => {
+      const now = new Date();
+      const byUser = input.userId
+        ? await tx.customer.findUnique({
+            where: { whatsappUserId: input.userId },
+            select: { id: true, normalizedPhone: true },
+          })
+        : null;
+      const byPhone = contact.normalizedPhone
+        ? await tx.customer.findUnique({
+            where: { normalizedPhone: contact.normalizedPhone },
+            select: { id: true, whatsappUserId: true },
+          })
+        : null;
+      let id: string;
+      let data: Prisma.CustomerUpdateInput;
+      if (byUser) {
+        id = byUser.id;
+        data = { ...profile };
+        if (
+          contact.normalizedPhone &&
+          contact.normalizedPhone !== byUser.normalizedPhone
+        ) {
+          if (!byPhone) Object.assign(data, phone);
+          else this.warn('WHATSAPP_PHONE_IN_OTHER_CUSTOMER');
+        }
+      } else if (byPhone) {
+        id = byPhone.id;
+        data = { ...profile };
+        if (input.userId) {
+          // Meta reissues the BSUID when a number changes hands or the user re-registers.
+          if (byPhone.whatsappUserId) this.warn('WHATSAPP_USER_ID_REPLACED');
+          data.whatsappUserId = input.userId;
+        }
+      } else {
+        return tx.customer.create({
+          data: {
+            ...phone,
+            sourceChannel: 'WHATSAPP',
+            whatsappUserId: input.userId,
+            ...profile,
+            firstContactAt: now,
+            lastContactAt: now,
+          },
+          select: customerSelect,
+        });
+      }
+      if (Object.keys(data).length)
+        await tx.customer.update({ where: { id }, data });
+      await this.touch(tx, id, now);
+      return tx.customer.findUniqueOrThrow({
+        where: { id },
+        select: customerSelect,
+      });
+    };
+    return transaction ? operation(transaction) : this.transaction(operation);
+  }
+
+  // Meta issues a new BSUID when a user changes their number and reports the previous one.
+  // Moving it keeps the customer and its history; a BSUID already in use is left alone.
+  async replaceWhatsAppUserId(previous: string, current: string) {
+    return this.transaction(async (tx) => {
+      const taken = await tx.customer.findUnique({
+        where: { whatsappUserId: current },
+        select: { id: true },
+      });
+      if (taken) {
+        this.warn('WHATSAPP_USER_ID_IN_USE');
+        return false;
+      }
+      const result = await tx.customer.updateMany({
+        where: { whatsappUserId: previous },
+        data: { whatsappUserId: current },
+      });
+      return result.count > 0;
+    });
+  }
+
+  // Identity anomalies are logged by code only: never phones, IDs or names.
+  private warn(code: string) {
+    this.logger.warn(JSON.stringify({ code }));
   }
 
   // A provider-supplied display name only fills a customer nobody has named yet.

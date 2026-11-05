@@ -17,6 +17,8 @@ export const conversationSelect = {
       lastName: true,
       phone: true,
       email: true,
+      whatsappUsername: true,
+      whatsappProfileName: true,
     },
   },
   assignedUser: {

@@ -100,6 +100,37 @@ describe('Mensajería: validación', () => {
       ).toThrow();
     },
   );
+  it('acepta un remitente de WhatsApp sin teléfono, identificado por su ID', () => {
+    expect(
+      validateInboundMessage({
+        ...command(),
+        contact: {
+          whatsappUserId: 'PE.13491208655302741918',
+          whatsappUsername: 'ana.q',
+          whatsappProfileName: 'Mamá Rosa 🌸',
+        },
+      }),
+    ).toMatchObject({
+      contact: {
+        whatsappUserId: 'PE.13491208655302741918',
+        whatsappUsername: 'ana.q',
+        whatsappProfileName: 'Mamá Rosa 🌸',
+      },
+    });
+  });
+  it.each([
+    ['otro canal', { channel: 'FACEBOOK' }, { whatsappUserId: 'PE.1' }],
+    ['ID inválido', {}, { whatsappUserId: 'PE 1' }],
+    ['usuario con @', {}, { phone: '+51987654321', whatsappUsername: '@ana' }],
+    ['apodo sin número ni ID', {}, { whatsappProfileName: 'Ana' }],
+    ['con correo', {}, { whatsappUserId: 'PE.1', email: 'a@example.com' }],
+    ['con nombre del CRM', {}, { whatsappUserId: 'PE.1', firstName: 'Ana' }],
+    ['con PSID', {}, { whatsappUserId: 'PE.1', externalId: '456' }],
+  ])('rechaza identidad de WhatsApp inválida: %s', (_, extra, contact) => {
+    expect(() =>
+      validateInboundMessage({ ...command(), ...extra, contact }),
+    ).toThrow();
+  });
   it.each(['IMAGE', 'FILE'])('acepta metadata %s, sin binario', (type) => {
     const parsed = validateInboundMessage({
       ...command(),

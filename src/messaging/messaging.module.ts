@@ -16,6 +16,8 @@ import { OutboundMessagesService } from './outbound-messages.service';
 import { MessageStatusService } from './message-status.service';
 import { MessengerTransportModule } from '../messenger/messenger-transport.module';
 import { MessengerAdapter } from '../messenger/messenger.adapter';
+import { InstagramTransportModule } from '../instagram/instagram-transport.module';
+import { InstagramAdapter } from '../instagram/instagram.adapter';
 import {
   CHANNEL_TRANSPORTS,
   ChannelTransports,
@@ -23,7 +25,12 @@ import {
 } from './channel-transport';
 
 @Module({
-  imports: [CustomersModule, WhatsAppTransportModule, MessengerTransportModule],
+  imports: [
+    CustomersModule,
+    WhatsAppTransportModule,
+    MessengerTransportModule,
+    InstagramTransportModule,
+  ],
   controllers: [ConversationsController],
   providers: [
     ConversationsService,
@@ -39,7 +46,7 @@ import {
     {
       provide: CHANNEL_TRANSPORTS,
       useFactory: (...transports: ChannelTransport[]) => transports,
-      inject: [WhatsAppAdapter, MessengerAdapter],
+      inject: [WhatsAppAdapter, MessengerAdapter, InstagramAdapter],
     },
     ChannelTransports,
   ],

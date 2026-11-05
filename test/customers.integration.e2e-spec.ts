@@ -464,6 +464,149 @@ integration('Clientes: integración aislada en PostgreSQL', () => {
       .set('x-test-role', 'ADMIN')
       .expect(400);
   });
+  describe('identidad de WhatsApp', () => {
+    let phones = 0;
+    // Valid Peruvian mobiles, unique per test run.
+    const phone = () =>
+      '+5199' +
+      String(Date.now() % 100000).padStart(5, '0') +
+      String(++phones).padStart(2, '0');
+    const userId = () => 'PE.' + randomUUID().replaceAll('-', '');
+    it('reconoce por ID y luego por número, sin duplicar ni fusionar clientes', async () => {
+      const phoneA = phone();
+      const phoneB = phone();
+      const [idA, idB] = [userId(), userId()];
+      // A customer created before BSUIDs existed, known only by phone.
+      const existing = await service.findOrCreateByContact({
+        phone: phoneA,
+        sourceChannel: ContactChannel.WHATSAPP,
+      });
+      const first = await service.findOrCreateByWhatsApp({
+        phone: phoneA,
+        userId: idA,
+        profile: { username: 'ana.q', name: 'Ana' },
+      });
+      expect(first).toMatchObject({
+        id: existing.id,
+        whatsappUsername: 'ana.q',
+        whatsappProfileName: 'Ana',
+      });
+      await service.update(existing.id, { firstName: 'Ana del CRM' });
+      // Meta hides the phone and the user dropped the username: same customer, phone kept.
+      const hidden = await service.findOrCreateByWhatsApp({
+        phone: null,
+        userId: idA,
+        profile: { username: null, name: 'Ana R' },
+      });
+      expect(hidden).toMatchObject({
+        id: existing.id,
+        phone: phoneA,
+        firstName: 'Ana del CRM',
+        whatsappUsername: null,
+        whatsappProfileName: 'Ana R',
+      });
+      // Without a profile in the webhook, the stored one is kept.
+      expect(
+        await service.findOrCreateByWhatsApp({ phone: null, userId: idA }),
+      ).toMatchObject({ whatsappProfileName: 'Ana R' });
+      const onlyId = await service.findOrCreateByWhatsApp({
+        phone: null,
+        userId: idB,
+      });
+      expect(onlyId).toMatchObject({
+        phone: null,
+        sourceChannel: ContactChannel.WHATSAPP,
+      });
+      expect(onlyId.id).not.toBe(existing.id);
+      const withPhone = await service.findOrCreateByWhatsApp({
+        phone: phoneB,
+        userId: idB,
+      });
+      expect(withPhone).toMatchObject({ id: onlyId.id, phone: phoneB });
+      // A phone that belongs to another customer is never moved or merged.
+      const conflict = await service.findOrCreateByWhatsApp({
+        phone: phoneA,
+        userId: idB,
+      });
+      expect(conflict).toMatchObject({ id: onlyId.id, phone: phoneB });
+      expect(
+        await prisma.customer.count({
+          where: { id: { in: [existing.id, onlyId.id] } },
+        }),
+      ).toBe(2);
+    });
+    it('el ID reemitido por Meta pasa al mismo cliente; uno en uso no se toca', async () => {
+      const [previous, current, other] = [userId(), userId(), userId()];
+      const customer = await service.findOrCreateByWhatsApp({
+        phone: phone(),
+        userId: previous,
+      });
+      await service.findOrCreateByWhatsApp({ phone: null, userId: other });
+      expect(await service.replaceWhatsAppUserId(previous, current)).toBe(true);
+      expect(
+        await service.findOrCreateByWhatsApp({ phone: null, userId: current }),
+      ).toMatchObject({ id: customer.id });
+      expect(await service.replaceWhatsAppUserId(current, other)).toBe(false);
+      expect(
+        (
+          await prisma.customer.findUniqueOrThrow({
+            where: { id: customer.id },
+          })
+        ).whatsappUserId,
+      ).toBe(current);
+    });
+    it('la BD acepta un cliente solo con ID, único; PATCH puede quitarle el teléfono', async () => {
+      const id = userId();
+      await prisma.customer.create({
+        data: { sourceChannel: ContactChannel.WHATSAPP, whatsappUserId: id },
+      });
+      await expect(
+        prisma.customer.create({
+          data: { sourceChannel: ContactChannel.WHATSAPP, whatsappUserId: id },
+        }),
+      ).rejects.toBeDefined();
+      const customer = await service.findOrCreateByWhatsApp({
+        phone: phone(),
+        userId: userId(),
+      });
+      await request(server)
+        .patch('/customers/' + customer.id)
+        .set('x-test-role', 'ADMIN')
+        .send({ phone: null })
+        .expect(200);
+      const plain = await service.findOrCreateByContact({
+        phone: phone(),
+        sourceChannel: ContactChannel.WHATSAPP,
+      });
+      await request(server)
+        .patch('/customers/' + plain.id)
+        .set('x-test-role', 'ADMIN')
+        .send({ phone: null })
+        .expect(400);
+    });
+    it('busca por nombre de usuario (con o sin @) y por apodo', async () => {
+      const handle = 'u' + randomUUID().slice(0, 8);
+      const customer = await service.findOrCreateByWhatsApp({
+        phone: null,
+        userId: userId(),
+        profile: { username: handle, name: 'Apodo ' + handle },
+      });
+      for (const search of [
+        '@' + handle,
+        handle.toUpperCase(),
+        'apodo ' + handle,
+      ]) {
+        const response = await request(server)
+          .get('/customers')
+          .query({ search })
+          .set('x-test-role', 'ADMIN')
+          .expect(200);
+        expect(
+          (response.body as { data: { id: string }[] }).data.map((c) => c.id),
+        ).toEqual([customer.id]);
+      }
+    });
+  });
   it('la BD rechaza clientes sin contacto y fechas incoherentes', async () => {
     await expect(
       prisma.customer.create({ data: { sourceChannel: ContactChannel.OTHER } }),

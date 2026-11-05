@@ -21,6 +21,10 @@ const settings = {
   META_APP_SECRET: 'fake-secret',
 };
 const config = () => new MessengerConfig(new ConfigService(settings));
+const toPsid = (id: string) => ({
+  recipientPhone: null,
+  recipientExternalId: id,
+});
 const item = (extra: object = {}) => ({
   sender: { id: '456' },
   recipient: { id: '123' },
@@ -100,19 +104,27 @@ describe('Messenger configuration, authentication and transport', () => {
       channel: 'FACEBOOK',
       errorPrefix: 'MESSENGER',
       maxTextLength: 2000,
-      recipientField: 'recipientExternalId',
       enabled: true,
       providerAccountId: '123',
     });
     const customer = {
       normalizedPhone: '+51987654321',
       externalContactId: '456',
+      whatsappUserId: 'PE.123',
     };
-    expect(adapter.recipientOf({ ...customer, providerAccountId: '123' })).toBe(
-      '456',
-    );
+    // Only the PSID: never the phone or the WhatsApp ID of the same customer.
+    expect(
+      adapter.recipientOf({ ...customer, providerAccountId: '123' }),
+    ).toEqual({ recipientPhone: null, recipientExternalId: '456' });
     expect(
       adapter.recipientOf({ ...customer, providerAccountId: '999' }),
+    ).toBeNull();
+    expect(
+      adapter.recipientOf({
+        ...customer,
+        providerAccountId: '123',
+        externalContactId: null,
+      }),
     ).toBeNull();
   });
   it('ignores other pages, Instagram, echoes, postbacks and read watermarks', () => {
@@ -436,7 +448,7 @@ describe('Messenger configuration, authentication and transport', () => {
         ),
       );
     await expect(
-      new MessengerAdapter(config()).sendMessage('456', 'Hola'),
+      new MessengerAdapter(config()).sendMessage(toPsid('456'), 'Hola'),
     ).resolves.toBe('mid.out');
     expect(fetchMock).toHaveBeenCalledWith(
       'https://graph.facebook.com/v26.0/123/messages',
@@ -468,7 +480,7 @@ describe('Messenger configuration, authentication and transport', () => {
         ),
       );
       await expect(
-        new MessengerAdapter(config()).sendMessage('456', 'Hola'),
+        new MessengerAdapter(config()).sendMessage(toPsid('456'), 'Hola'),
       ).rejects.toMatchObject({
         outcome,
         diagnostic: { httpStatus: status, metaCode: 10 },
@@ -480,7 +492,9 @@ describe('Messenger configuration, authentication and transport', () => {
       .spyOn(globalThis, 'fetch')
       .mockRejectedValueOnce(new Error('network'));
     const adapter = new MessengerAdapter(config());
-    await expect(adapter.sendMessage('456', 'Hola')).rejects.toMatchObject({
+    await expect(
+      adapter.sendMessage(toPsid('456'), 'Hola'),
+    ).rejects.toMatchObject({
       outcome: 'unknown',
     });
     fetchMock.mockResolvedValueOnce(
@@ -488,7 +502,9 @@ describe('Messenger configuration, authentication and transport', () => {
         JSON.stringify({ recipient_id: '999', message_id: 'mid.out' }),
       ),
     );
-    await expect(adapter.sendMessage('456', 'Hola')).rejects.toMatchObject({
+    await expect(
+      adapter.sendMessage(toPsid('456'), 'Hola'),
+    ).rejects.toMatchObject({
       outcome: 'unknown',
     });
   });
@@ -497,13 +513,16 @@ describe('Messenger configuration, authentication and transport', () => {
     await expect(
       new MessengerAdapter(
         new MessengerConfig(new ConfigService({})),
-      ).sendMessage('456', 'Hola'),
+      ).sendMessage(toPsid('456'), 'Hola'),
     ).rejects.toThrow();
     await expect(
-      new MessengerAdapter(config()).sendMessage('bad', 'Hola'),
+      new MessengerAdapter(config()).sendMessage(toPsid('bad'), 'Hola'),
     ).rejects.toThrow();
     await expect(
-      new MessengerAdapter(config()).sendMessage('456', 'x'.repeat(2001)),
+      new MessengerAdapter(config()).sendMessage(
+        toPsid('456'),
+        'x'.repeat(2001),
+      ),
     ).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
   });

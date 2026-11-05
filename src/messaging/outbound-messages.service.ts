@@ -17,12 +17,16 @@ import type { OutboundMessageDto } from './outbound-message.dto';
 import {
   ChannelSendError,
   ChannelTransports,
+  exceedsTextLimit,
   isRetryableSendError,
+  type ChannelAddress,
   type ChannelTransport,
 } from './channel-transport';
 
 // Meta's customer service window, shared by WhatsApp and Messenger.
 export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const hasAddress = (address: ChannelAddress) =>
+  !!address.recipientPhone || !!address.recipientExternalId;
 @Injectable()
 export class OutboundMessagesService {
   private readonly logger = new Logger(OutboundMessagesService.name);
@@ -70,6 +74,7 @@ export class OutboundMessagesService {
               normalizedPhone: true,
               providerAccountId: true,
               externalContactId: true,
+              whatsappUserId: true,
             },
           },
         },
@@ -86,12 +91,22 @@ export class OutboundMessagesService {
         throw new BadRequestException(
           `${transport.label} admite hasta ${transport.maxTextLength} caracteres por respuesta`,
         );
-      const recipient = transport.recipientOf(conversation.customer);
-      if (!recipient)
+      if (exceedsTextLimit(transport, dto.content))
+        throw new BadRequestException(
+          `${transport.label} admite hasta ${transport.maxTextBytes} bytes por respuesta; las tildes y los emojis ocupan más de uno`,
+        );
+      const candidates = transport.recipientOf(conversation.customer);
+      if (!candidates || !hasAddress(candidates))
         throw new BadRequestException(
           'Conversación sin destinatario habilitado',
         );
-      if (!(await this.windowOpen(tx, conversationId, transport, recipient)))
+      const recipient = await this.openAddress(
+        tx,
+        conversationId,
+        transport,
+        candidates,
+      );
+      if (!recipient)
         throw new ConflictException(transport.windowClosedMessage);
       const current = await tx.conversation.update({
         where: { id: conversationId },
@@ -108,7 +123,8 @@ export class OutboundMessagesService {
           content: dto.content,
           authorUserId,
           idempotencyKey: key,
-          ...this.address(transport, recipient),
+          recipientPhone: recipient.recipientPhone,
+          recipientExternalId: recipient.recipientExternalId,
           providerAccountId: transport.providerAccountId,
           outbox: { create: {} },
         },
@@ -119,21 +135,53 @@ export class OutboundMessagesService {
       ? enqueue(transaction)
       : this.transactions.run(enqueue, true);
   }
-  private address(transport: ChannelTransport, recipient: string) {
-    return transport.recipientField === 'recipientPhone'
-      ? { recipientPhone: recipient, recipientExternalId: null }
-      : { recipientPhone: null, recipientExternalId: recipient };
+  // The first candidate, phone first, with an inbound message inside the window.
+  private async openAddress(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+    transport: ChannelTransport,
+    candidates: ChannelAddress,
+  ): Promise<ChannelAddress | null> {
+    const options: ChannelAddress[] = [
+      ...(candidates.recipientPhone
+        ? [
+            {
+              recipientPhone: candidates.recipientPhone,
+              recipientExternalId: null,
+            },
+          ]
+        : []),
+      ...(candidates.recipientExternalId
+        ? [
+            {
+              recipientPhone: null,
+              recipientExternalId: candidates.recipientExternalId,
+            },
+          ]
+        : []),
+    ];
+    for (const option of options)
+      if (await this.windowOpen(tx, conversationId, transport, option))
+        return option;
+    return null;
   }
   private async windowOpen(
     tx: Prisma.TransactionClient,
     conversationId: string,
     transport: ChannelTransport,
-    recipient: string,
+    recipient: ChannelAddress,
   ) {
     const latest = await tx.message.findFirst({
       where: {
         conversationId,
-        [transport.recipientField]: recipient,
+        OR: [
+          ...(recipient.recipientPhone
+            ? [{ recipientPhone: recipient.recipientPhone }]
+            : []),
+          ...(recipient.recipientExternalId
+            ? [{ recipientExternalId: recipient.recipientExternalId }]
+            : []),
+        ],
         providerAccountId: transport.providerAccountId,
         direction: 'INBOUND',
         channel: transport.channel,
@@ -177,14 +225,17 @@ export class OutboundMessagesService {
         message.outbox.availableAt > new Date()
       )
         return 'busy' as const;
-      const recipient = transport ? message[transport.recipientField] : null;
+      const recipient: ChannelAddress = {
+        recipientPhone: message.recipientPhone,
+        recipientExternalId: message.recipientExternalId,
+      };
       if (
         !transport ||
         message.processingAttempts >= MESSAGE_ATTEMPTS ||
         message.type !== 'TEXT' ||
         !message.content ||
-        !recipient ||
-        message.content.length > transport.maxTextLength ||
+        !hasAddress(recipient) ||
+        exceedsTextLimit(transport, message.content) ||
         message.providerAccountId !== transport.providerAccountId
       ) {
         await this.finish(tx, messageId, 'FAILED', `${prefix}_SEND_INVALID`);
@@ -220,7 +271,10 @@ export class OutboundMessagesService {
     let failure: ChannelSendError | undefined;
     try {
       externalMessageId = await transport.sendMessage(
-        claimed[transport.recipientField]!,
+        {
+          recipientPhone: claimed.recipientPhone,
+          recipientExternalId: claimed.recipientExternalId,
+        },
         claimed.content!,
       );
     } catch (error) {

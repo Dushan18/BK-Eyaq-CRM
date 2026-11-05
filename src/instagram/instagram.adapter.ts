@@ -5,6 +5,13 @@ import {
   validateInboundMessage,
   type InboundMessageCommand,
 } from '../messaging/inbound-message.command';
+import {
+  ChannelSendError,
+  type ChannelAddress,
+  type ChannelRecipientSource,
+  type ChannelTransport,
+} from '../messaging/channel-transport';
+import { readSendDiagnostic } from '../messaging/send-diagnostic';
 import { fingerprint } from '../messaging/meta-webhook';
 
 function object(value: unknown): Record<string, unknown> {
@@ -20,10 +27,98 @@ function list(value: unknown): unknown[] {
 }
 
 @Injectable()
-export class InstagramAdapter implements MessagingChannelAdapter {
+export class InstagramAdapter
+  implements MessagingChannelAdapter, ChannelTransport
+{
   readonly channel = 'INSTAGRAM' as const;
+  readonly errorPrefix = 'INSTAGRAM';
+  readonly label = 'Instagram';
+  // Meta: "UTF-8 and 1,000 bytes or less"; accents and emojis take more than one byte.
+  readonly maxTextLength = 1000;
+  readonly maxTextBytes = 1000;
+  readonly windowClosedMessage =
+    'Ventana de Instagram cerrada; el cliente debe enviar un nuevo mensaje';
   private readonly logger = new Logger(InstagramAdapter.name);
   constructor(private readonly config: InstagramConfig) {}
+  // Instagram receives without a token, but replies need one.
+  get enabled() {
+    return this.config.canSend;
+  }
+  get providerAccountId() {
+    return this.config.accountId;
+  }
+  assertEnabled() {
+    this.config.assertCanSend();
+  }
+  // An IGSID only exists for one Instagram account.
+  recipientOf(customer: ChannelRecipientSource): ChannelAddress | null {
+    return customer.providerAccountId === this.config.accountId &&
+      customer.externalContactId
+      ? {
+          recipientPhone: null,
+          recipientExternalId: customer.externalContactId,
+        }
+      : null;
+  }
+  // Instagram API with Facebook Login: the account's /messages edge accepts the system-user
+  // token with instagram_manage_messages (the Page edge would need a Page token).
+  async sendMessage(address: ChannelAddress, content: string): Promise<string> {
+    this.config.assertCanSend();
+    const to = address.recipientExternalId;
+    if (
+      !to ||
+      !/^\d{1,80}$/.test(to) ||
+      !content.trim() ||
+      Buffer.byteLength(content, 'utf8') > this.maxTextBytes
+    )
+      throw new ChannelSendError('failed');
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://graph.facebook.com/${this.config.version}/${this.config.accountId}/messages`,
+        {
+          method: 'POST',
+          redirect: 'error',
+          signal: AbortSignal.timeout(15000),
+          headers: {
+            Authorization: `Bearer ${this.config.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            recipient: { id: to },
+            message: { text: content },
+          }),
+        },
+      );
+    } catch {
+      throw new ChannelSendError('unknown');
+    }
+    // Shared outcome contract with the durable outbox; never blindly resend uncertain POSTs.
+    const diagnostic = response.ok
+      ? undefined
+      : await readSendDiagnostic(response);
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get('retry-after') ?? '1');
+      throw new ChannelSendError(
+        'retry',
+        Number.isFinite(seconds)
+          ? Math.min(3600000, Math.max(1000, seconds * 1000))
+          : 1000,
+        diagnostic,
+      );
+    }
+    if (response.status >= 500 || response.status === 408)
+      throw new ChannelSendError('unknown', 1000, diagnostic);
+    if (!response.ok) throw new ChannelSendError('failed', 1000, diagnostic);
+    try {
+      const result = object(await response.json());
+      if (result.recipient_id !== to || typeof result.message_id !== 'string')
+        throw new Error('Unexpected response');
+      return result.message_id;
+    } catch {
+      throw new ChannelSendError('unknown');
+    }
+  }
   parseInboundEvent(event: unknown): Promise<InboundMessageCommand[]> {
     return Promise.resolve(this.parse(event).messages);
   }

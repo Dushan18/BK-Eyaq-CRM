@@ -7,6 +7,7 @@ import {
 } from '../messaging/inbound-message.command';
 import {
   ChannelSendError,
+  type ChannelAddress,
   type ChannelDeliveryStatus,
   type ChannelRecipientSource,
   type ChannelTransport,
@@ -65,7 +66,6 @@ export class MessengerAdapter
   readonly maxTextLength = 2000;
   readonly windowClosedMessage =
     'Ventana de Messenger cerrada; el cliente debe enviar un nuevo mensaje';
-  readonly recipientField = 'recipientExternalId' as const;
   private readonly logger = new Logger(MessengerAdapter.name);
   constructor(private readonly config: MessengerConfig) {}
   get enabled() {
@@ -78,9 +78,13 @@ export class MessengerAdapter
     this.config.assertEnabled();
   }
   // A PSID only exists for one Page: a customer of another Page is not addressable here.
-  recipientOf(customer: ChannelRecipientSource) {
-    return customer.providerAccountId === this.config.pageId
-      ? customer.externalContactId
+  recipientOf(customer: ChannelRecipientSource): ChannelAddress | null {
+    return customer.providerAccountId === this.config.pageId &&
+      customer.externalContactId
+      ? {
+          recipientPhone: null,
+          recipientExternalId: customer.externalContactId,
+        }
       : null;
   }
   parseInboundEvent(event: unknown): Promise<InboundMessageCommand[]> {
@@ -214,9 +218,9 @@ export class MessengerAdapter
       });
     }
   }
-  async sendMessage(to: string, content: string): Promise<string> {
+  async sendMessage(address: ChannelAddress, content: string): Promise<string> {
     this.config.assertEnabled();
-    id(to);
+    const to = id(address.recipientExternalId);
     text(content, this.maxTextLength);
     let response: Response;
     try {

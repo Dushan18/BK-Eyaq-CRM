@@ -26,15 +26,22 @@ export class WhatsAppService {
     const parsed = this.adapter.parse(
       parseSignedEvent(raw, signature, this.config.appSecret),
     );
+    // A reissued BSUID moves first, so the sender's next messages find their customer.
+    for (const { previous, current } of parsed.userIdChanges)
+      await this.customers.replaceWhatsAppUserId(previous, current);
     const created = await this.messages.ingestFromProvider(
       parsed.messages,
       parsed.rejected,
     );
     await this.statuses.accept(parsed.statuses, 'WHATSAPP');
-    // The name comes in the webhook itself: no call to Meta, so no per-webhook limit.
+    // The CRM name starts as the username ("@ana.q") or else the profile name. Both come in
+    // the webhook itself: no call to Meta, so no per-webhook limit.
     const named = await recordContactNames(
       created,
-      ({ externalMessageId }) => parsed.names.get(externalMessageId) ?? null,
+      ({ contact }) =>
+        contact.whatsappUsername
+          ? `@${contact.whatsappUsername}`
+          : (contact.whatsappProfileName ?? null),
       (customerId, name) => this.customers.setNameIfMissing(customerId, name),
       Number.POSITIVE_INFINITY,
     );

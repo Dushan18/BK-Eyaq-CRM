@@ -32,6 +32,17 @@ export class InstagramConfig {
     if (!this.enabled)
       throw new ServiceUnavailableException('Instagram no está habilitado');
   }
+  // Replies need the access token; without it Instagram only receives.
+  get canSend() {
+    return this.enabled && !!this.accessToken;
+  }
+  assertCanSend() {
+    this.assertEnabled();
+    if (!this.accessToken)
+      throw new ServiceUnavailableException(
+        'El envío por Instagram no está configurado',
+      );
+  }
   get accountId() {
     return this.config.get<string>('INSTAGRAM_ACCOUNT_ID') ?? '';
   }

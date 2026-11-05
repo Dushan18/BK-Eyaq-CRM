@@ -120,6 +120,9 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
   };
 
   beforeAll(async () => {
+    // The app reads the developer's .env, whose Redis a running backend also uses: queues
+    // of its own keep this run from taking that backend's jobs, and vice versa.
+    process.env.MESSAGING_QUEUE_PREFIX = 'crm-test-' + randomUUID();
     const connectionString =
       process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
     if (!connectionString)

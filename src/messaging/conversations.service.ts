@@ -7,6 +7,7 @@ import {
 import type { Prisma } from '../../generated/prisma/client';
 import { RoleCode } from '../../generated/prisma/enums';
 import { PrismaService } from '../database/prisma.service';
+import { whatsappSearch } from '../customers/customers.service';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import {
   type AssignConversationDto,
@@ -55,6 +56,7 @@ export class ConversationsService {
                 { phone: { contains: query.search } },
                 { email: { contains: query.search, mode: 'insensitive' } },
                 ...(digits ? [{ normalizedPhone: { contains: digits } }] : []),
+                ...whatsappSearch(query.search),
               ],
             },
           }

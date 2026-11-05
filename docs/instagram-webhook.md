@@ -39,8 +39,15 @@ Implementa `GET /webhooks/instagram` (challenge en texto plano) y `POST /webhook
   o un formato distinto. La prueba funcional debe ser un DM real.
 - 403 en GET: token/modo/challenge incorrectos. 403 en POST: firma o App Secret incorrectos.
 - 503: Instagram desactivado. 500: revisar persistencia/migraciones; Meta puede reintentar.
-- Todavía **no implementa envío**, descarga de adjuntos ni respuestas automáticas de Samanta.
-  `INSTAGRAM_ACCESS_TOKEN` e `INSTAGRAM_API_VERSION` se usan hoy solo para el nombre del perfil.
+- Respuestas desde el CRM: `POST /conversations/:id/messages` envía por
+  `POST https://graph.facebook.com/{INSTAGRAM_API_VERSION}/{INSTAGRAM_ACCOUNT_ID}/messages` con
+  `INSTAGRAM_ACCESS_TOKEN` (token de usuario del sistema con `instagram_manage_messages`; el
+  endpoint de la página exigiría un token de página con ese permiso). Solo dentro de las 24 h
+  siguientes al último mensaje del cliente (409 fuera de la ventana), hasta 1000 bytes UTF-8
+  (400 si se excede) y sin token responde 503. Los errores se registran como
+  `INSTAGRAM_SEND_HTTP_ERROR` con el código de Meta, sin contenido. Con acceso estándar, Meta
+  solo permite enviar a cuentas con un rol en la app.
+- Todavía no implementa descarga de adjuntos, confirmaciones de lectura ni Samanta en Instagram.
   No reemplazar credenciales de WhatsApp ni Messenger.
 - No publicar tokens, App Secret ni cuerpos de mensajes en capturas o logs.
 
