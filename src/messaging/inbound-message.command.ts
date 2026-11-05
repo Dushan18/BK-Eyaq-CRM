@@ -19,7 +19,12 @@ export interface InboundMessageCommand {
   externalMessageId: string;
   externalConversationId?: string;
   providerAccountId?: string;
-  contact: ContactInput & { firstName?: string; lastName?: string };
+  // externalId: a provider-scoped identity (a Messenger PSID) within providerAccountId.
+  contact: ContactInput & {
+    firstName?: string;
+    lastName?: string;
+    externalId?: string;
+  };
   type: MessageType;
   content?: string;
   occurredAt?: string;
@@ -66,15 +71,37 @@ export function validateInboundMessage(input: unknown): InboundMessageCommand {
   )
     invalid();
   const contact = object(data.contact);
-  keys(contact, ['phone', 'phoneCountry', 'email', 'firstName', 'lastName']);
+  keys(contact, [
+    'phone',
+    'phoneCountry',
+    'email',
+    'firstName',
+    'lastName',
+    'externalId',
+  ]);
   const parsedContact = {
     phone: text(contact.phone, 80),
     phoneCountry: text(contact.phoneCountry, 2),
     email: text(contact.email, 320),
     firstName: text(contact.firstName, 100),
     lastName: text(contact.lastName, 100),
+    externalId: text(contact.externalId, 80),
   };
-  normalizeContact(parsedContact);
+  const externalId = parsedContact.externalId;
+  // A provider identity is never a phone number in disguise: it is numeric (as the
+  // customers CHECK constraint requires), scoped to its account and never mixed with one.
+  if (
+    externalId !== undefined &&
+    (!/^\d+$/.test(externalId) ||
+      typeof data.providerAccountId !== 'string' ||
+      !/^\d{1,80}$/.test(data.providerAccountId) ||
+      parsedContact.phone !== undefined ||
+      parsedContact.email !== undefined)
+  )
+    invalid();
+  normalizeContact(parsedContact, {
+    allowMissingContact: externalId !== undefined,
+  });
   const content = text(data.content, 16000);
   const occurredAt = text(data.occurredAt, 40);
   if (

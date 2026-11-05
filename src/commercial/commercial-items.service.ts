@@ -251,7 +251,8 @@ export class CommercialItemsService {
   }
 
   async update(id: string, dto: UpdateCommercialItemDto) {
-    if (Object.keys(dto).length === 0) {
+    // El ValidationPipe declara cada campo del DTO aunque no llegue en el body.
+    if (!Object.values(dto).some((value) => value !== undefined)) {
       throw new BadRequestException(
         'Debes proporcionar al menos un campo para actualizar',
       );
@@ -855,6 +856,7 @@ export class CommercialItemsService {
         { nameEs: { sort: order, nulls: 'last' } },
         { nameEn: { sort: order, nulls: 'last' } },
         { createdAt: 'desc' },
+        { id: 'asc' },
       ];
     }
 
@@ -868,11 +870,17 @@ export class CommercialItemsService {
   private defaultOrderBy(
     order: 'asc' | 'desc',
   ): Prisma.CommercialItemOrderByWithRelationInput[] {
+    // Agrupa por categoría aunque varias compartan displayOrder y termina en id
+    // para que el orden sea total y las páginas no se solapen.
     return [
       { category: { displayOrder: order } },
+      { category: { nameEs: { sort: order, nulls: 'last' } } },
+      { category: { nameEn: { sort: order, nulls: 'last' } } },
+      { categoryId: order },
       { displayOrder: order },
       { nameEs: { sort: order, nulls: 'last' } },
       { nameEn: { sort: order, nulls: 'last' } },
+      { id: 'asc' },
     ];
   }
 

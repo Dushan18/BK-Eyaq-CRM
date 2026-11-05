@@ -1,20 +1,37 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
 import { normalizeContact } from '../common/contact-normalization';
 import { CustomersService } from '../customers/customers.service';
+import { PrismaService } from '../database/prisma.service';
 import { MessagingTransactionService } from './messaging-transaction.service';
-import { validateInboundMessage } from './inbound-message.command';
+import {
+  validateInboundMessage,
+  type InboundMessageCommand,
+} from './inbound-message.command';
 import { messageSelect } from './messaging.select';
+import { fingerprint } from './meta-webhook';
+
+export const INBOUND_IDENTITY_CONFLICT =
+  'El identificador del mensaje pertenece a otra identidad';
 
 @Injectable()
 export class MessagesService {
   constructor(
     private readonly customers: CustomersService,
     private readonly transactions: MessagingTransactionService,
+    private readonly prisma: PrismaService,
   ) {}
 
+  // Single ingestion path for every channel; adapters only translate provider events.
   async ingestInboundMessage(input: unknown) {
     const command = validateInboundMessage(input);
-    const contact = normalizeContact(command.contact);
+    const { externalId, ...contactInput } = command.contact;
+    const contact = normalizeContact(contactInput, {
+      allowMissingContact: externalId !== undefined,
+    });
     return this.transactions.run(async (tx) => {
       const existing = await tx.message.findUnique({
         where: {
@@ -25,6 +42,8 @@ export class MessagesService {
         },
         select: {
           ...messageSelect,
+          providerAccountId: true,
+          recipientExternalId: true,
           conversation: {
             select: {
               customer: {
@@ -35,31 +54,52 @@ export class MessagesService {
         },
       });
       if (existing) {
-        const identity = existing.conversation.customer;
-        const matches =
-          (contact.normalizedPhone &&
-            contact.normalizedPhone === identity.normalizedPhone) ||
-          (contact.normalizedEmail &&
-            contact.normalizedEmail === identity.normalizedEmail);
-        const conflicts =
-          (contact.normalizedPhone &&
-            identity.normalizedPhone &&
-            contact.normalizedPhone !== identity.normalizedPhone) ||
-          (contact.normalizedEmail &&
-            identity.normalizedEmail &&
-            contact.normalizedEmail !== identity.normalizedEmail);
-        if (!matches || conflicts)
-          throw new ConflictException(
-            'El identificador del mensaje pertenece a otra identidad',
-          );
-        const { conversation: _private, ...message } = existing;
-        void _private;
-        return { message, duplicate: true };
+        const { conversation, providerAccountId, recipientExternalId } =
+          existing;
+        const identity = conversation.customer;
+        const same =
+          externalId !== undefined
+            ? existing.direction === 'INBOUND' &&
+              providerAccountId === command.providerAccountId &&
+              recipientExternalId === externalId
+            : ((contact.normalizedPhone &&
+                contact.normalizedPhone === identity.normalizedPhone) ||
+                (contact.normalizedEmail &&
+                  contact.normalizedEmail === identity.normalizedEmail)) &&
+              !(
+                (contact.normalizedPhone &&
+                  identity.normalizedPhone &&
+                  contact.normalizedPhone !== identity.normalizedPhone) ||
+                (contact.normalizedEmail &&
+                  identity.normalizedEmail &&
+                  contact.normalizedEmail !== identity.normalizedEmail)
+              );
+        if (!same) throw new ConflictException(INBOUND_IDENTITY_CONFLICT);
+        const {
+          conversation: _conversation,
+          providerAccountId: _account,
+          recipientExternalId: _recipient,
+          ...message
+        } = existing;
+        void _conversation;
+        void _account;
+        void _recipient;
+        return { message, duplicate: true as const };
       }
-      const customer = await this.customers.findOrCreateByContact(
-        { ...command.contact, sourceChannel: command.channel },
-        tx,
-      );
+      const customer =
+        externalId !== undefined
+          ? await this.customers.findOrCreateByProviderIdentity(
+              {
+                sourceChannel: command.channel,
+                providerAccountId: command.providerAccountId!,
+                externalContactId: externalId,
+              },
+              tx,
+            )
+          : await this.customers.findOrCreateByContact(
+              { ...contactInput, sourceChannel: command.channel },
+              tx,
+            );
       const conversation = await tx.conversation.upsert({
         where: {
           customerId_channel: {
@@ -98,6 +138,7 @@ export class MessagesService {
           direction: 'INBOUND',
           providerAccountId: command.providerAccountId,
           recipientPhone: contact.normalizedPhone,
+          recipientExternalId: externalId ?? null,
           status: 'RECEIVED',
           type: command.type,
           content: command.content,
@@ -109,7 +150,51 @@ export class MessagesService {
         select: messageSelect,
       });
       // TODO: MESSAGE_RECEIVED audit event; never log content/contact.
-      return { message, duplicate: false };
+      return { message, duplicate: false as const, customer };
     }, true);
+  }
+
+  // Webhook policy shared by every provider: invalid or identity-conflicting commands are
+  // fingerprinted into `rejected` for quarantine; anything else is rethrown so the provider
+  // retries the delivery. Returns the messages that were stored for the first time.
+  async ingestFromProvider(
+    commands: InboundMessageCommand[],
+    rejected: string[],
+  ) {
+    const created: {
+      command: InboundMessageCommand;
+      customer: {
+        id: string;
+        firstName: string | null;
+        lastName: string | null;
+      };
+    }[] = [];
+    for (const command of commands) {
+      try {
+        const result = await this.ingestInboundMessage(command);
+        if (!result.duplicate)
+          created.push({ command, customer: result.customer });
+      } catch (error) {
+        // Transient transaction contention must cause provider retry, not quarantine.
+        if (
+          !(error instanceof BadRequestException) &&
+          !(
+            error instanceof ConflictException &&
+            error.message === INBOUND_IDENTITY_CONFLICT
+          )
+        )
+          throw error;
+        rejected.push(fingerprint(command));
+      }
+    }
+    return created;
+  }
+
+  async quarantine(fingerprints: string[], code: string) {
+    if (!fingerprints.length) return;
+    await this.prisma.messagingWebhookRejection.createMany({
+      data: fingerprints.map((value) => ({ fingerprint: value, code })),
+      skipDuplicates: true,
+    });
   }
 }

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client } from 'pg';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { createPgAdapter } from '../src/database/pg-adapter';
 import { Test } from '@nestjs/testing';
 import { type INestApplication, ValidationPipe } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
@@ -22,6 +22,8 @@ import { registerMessagingCoreTests } from './messaging-core.cases';
 import { registerWhatsAppTests, whatsappTestConfig } from './whatsapp.cases';
 import { WhatsAppConfig } from '../src/whatsapp/whatsapp.config';
 import { MessengerConfig } from '../src/messenger/messenger.config';
+import { InstagramConfig } from '../src/instagram/instagram.config';
+import { instagramTestConfig, registerInstagramTests } from './instagram.cases';
 import { registerMessengerTests, messengerTestConfig } from './messenger.cases';
 import { SamantaConfig } from '../src/samanta/samanta.config';
 import { SamantaProvider } from '../src/samanta/samanta.provider';
@@ -151,7 +153,7 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       await migrationClient.end();
     }
     prisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: testUrl.toString() }),
+      adapter: createPgAdapter(testUrl.toString()),
     });
     await prisma.$connect();
     const fixture = await Test.createTestingModule({ imports: [AppModule] })
@@ -163,6 +165,8 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       .useValue(whatsappTestConfig)
       .overrideProvider(MessengerConfig)
       .useValue(messengerTestConfig)
+      .overrideProvider(InstagramConfig)
+      .useValue(instagramTestConfig)
       .overrideProvider(SamantaConfig)
       .useValue(samantaTestConfig)
       .overrideProvider(SamantaProvider)
@@ -1626,6 +1630,12 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     prisma: () => prisma,
   });
   registerSamantaTests({
+    server: () => server,
+    auth,
+    app: () => app,
+    prisma: () => prisma,
+  });
+  registerInstagramTests({
     server: () => server,
     auth,
     app: () => app,

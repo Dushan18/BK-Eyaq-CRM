@@ -1,11 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
+import 'reflect-metadata';
+
 import {
   BadRequestException,
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
 
 import type { PrismaService } from '../database/prisma.service';
+import { UpdateCommercialCategoryDto } from '../dto/commercial-category.dto';
 import { CommercialCategoriesService } from './commercial-categories.service';
 
 jest.mock('../database/prisma.service', () => ({
@@ -122,8 +126,11 @@ describe('CommercialCategoriesService', () => {
     );
   });
 
-  it('rechaza un PATCH vacío', async () => {
-    await expect(service.update(category.id, {})).rejects.toBeInstanceOf(
+  it('rechaza un PATCH vacío tal como lo entrega el ValidationPipe', async () => {
+    // El pipe entrega una instancia del DTO con cada campo declarado en undefined.
+    const dto = plainToInstance(UpdateCommercialCategoryDto, {});
+
+    await expect(service.update(category.id, dto)).rejects.toBeInstanceOf(
       BadRequestException,
     );
     expect(findUnique).not.toHaveBeenCalled();

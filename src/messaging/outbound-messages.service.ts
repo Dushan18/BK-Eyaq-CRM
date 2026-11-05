@@ -4,16 +4,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma/client';
-import { WhatsAppConfig } from '../whatsapp/whatsapp.config';
-import {
-  WhatsAppAdapter,
-  WhatsAppSendError,
-  isRetryableWhatsAppError,
-} from '../whatsapp/whatsapp.adapter';
 import { MessagingTransactionService } from './messaging-transaction.service';
 import { messageSelect } from './messaging.select';
 import {
@@ -21,19 +14,21 @@ import {
   MESSAGE_LEASE_MS,
 } from './message-processor.service';
 import type { OutboundMessageDto } from './outbound-message.dto';
-import { MessengerConfig } from '../messenger/messenger.config';
-import { MessengerAdapter } from '../messenger/messenger.adapter';
+import {
+  ChannelSendError,
+  ChannelTransports,
+  isRetryableSendError,
+  type ChannelTransport,
+} from './channel-transport';
 
-export const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Meta's customer service window, shared by WhatsApp and Messenger.
+export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 @Injectable()
 export class OutboundMessagesService {
   private readonly logger = new Logger(OutboundMessagesService.name);
   constructor(
     private readonly transactions: MessagingTransactionService,
-    private readonly config: WhatsAppConfig,
-    private readonly adapter: WhatsAppAdapter,
-    @Optional() private readonly messengerConfig?: MessengerConfig,
-    @Optional() private readonly messengerAdapter?: MessengerAdapter,
+    private readonly transports: ChannelTransports,
   ) {}
   async queueOutboundMessage(
     conversationId: string,
@@ -81,36 +76,23 @@ export class OutboundMessagesService {
       });
       if (!conversation)
         throw new NotFoundException('Conversación no encontrada');
-      const facebook = conversation.channel === 'FACEBOOK';
-      const channel = facebook ? 'FACEBOOK' : 'WHATSAPP';
-      if (facebook) {
-        if (!this.messengerConfig || !this.messengerAdapter)
-          throw new BadRequestException('Messenger no configurado');
-        this.messengerConfig.assertEnabled();
-        if (dto.content.length > 2000)
-          throw new BadRequestException(
-            'Messenger admite hasta 2000 caracteres por respuesta',
-          );
-      } else this.config.assertEnabled();
-      const recipient = facebook
-        ? conversation.customer.externalContactId
-        : conversation.customer.normalizedPhone;
-      if (
-        !['WHATSAPP', 'FACEBOOK'].includes(conversation.channel) ||
-        !recipient ||
-        (facebook &&
-          conversation.customer.providerAccountId !==
-            this.messengerConfig!.pageId)
-      )
+      const transport = this.transports.find(conversation.channel);
+      if (!transport)
         throw new BadRequestException(
           'Conversación sin destinatario habilitado',
         );
-      if (!(await this.windowOpen(tx, conversationId, recipient, channel)))
-        throw new ConflictException(
-          facebook
-            ? 'Ventana de Messenger cerrada; el cliente debe enviar un nuevo mensaje'
-            : 'Ventana de WhatsApp cerrada; se requiere una plantilla aprobada',
+      transport.assertEnabled();
+      if (dto.content.length > transport.maxTextLength)
+        throw new BadRequestException(
+          `${transport.label} admite hasta ${transport.maxTextLength} caracteres por respuesta`,
         );
+      const recipient = transport.recipientOf(conversation.customer);
+      if (!recipient)
+        throw new BadRequestException(
+          'Conversación sin destinatario habilitado',
+        );
+      if (!(await this.windowOpen(tx, conversationId, transport, recipient)))
+        throw new ConflictException(transport.windowClosedMessage);
       const current = await tx.conversation.update({
         where: { id: conversationId },
         data: { lastSequence: { increment: 1 }, lastMessageAt: new Date() },
@@ -118,7 +100,7 @@ export class OutboundMessagesService {
       return tx.message.create({
         data: {
           conversationId,
-          channel,
+          channel: transport.channel,
           sequence: current.lastSequence,
           direction: 'OUTBOUND',
           status: 'QUEUED',
@@ -126,11 +108,8 @@ export class OutboundMessagesService {
           content: dto.content,
           authorUserId,
           idempotencyKey: key,
-          recipientPhone: facebook ? null : recipient,
-          recipientExternalId: facebook ? recipient : null,
-          providerAccountId: facebook
-            ? this.messengerConfig!.pageId
-            : this.config.phoneId,
+          ...this.address(transport, recipient),
+          providerAccountId: transport.providerAccountId,
           outbox: { create: {} },
         },
         select: messageSelect,
@@ -140,26 +119,26 @@ export class OutboundMessagesService {
       ? enqueue(transaction)
       : this.transactions.run(enqueue, true);
   }
+  private address(transport: ChannelTransport, recipient: string) {
+    return transport.recipientField === 'recipientPhone'
+      ? { recipientPhone: recipient, recipientExternalId: null }
+      : { recipientPhone: null, recipientExternalId: recipient };
+  }
   private async windowOpen(
     tx: Prisma.TransactionClient,
     conversationId: string,
-    recipientPhone: string,
-    channel: 'WHATSAPP' | 'FACEBOOK' = 'WHATSAPP',
+    transport: ChannelTransport,
+    recipient: string,
   ) {
     const latest = await tx.message.findFirst({
       where: {
         conversationId,
-        ...(channel === 'FACEBOOK'
-          ? { recipientExternalId: recipientPhone }
-          : { recipientPhone }),
-        providerAccountId:
-          channel === 'FACEBOOK'
-            ? this.messengerConfig!.pageId
-            : this.config.phoneId,
+        [transport.recipientField]: recipient,
+        providerAccountId: transport.providerAccountId,
         direction: 'INBOUND',
-        channel,
+        channel: transport.channel,
         occurredAt: {
-          gte: new Date(Date.now() - WHATSAPP_WINDOW_MS),
+          gte: new Date(Date.now() - SERVICE_WINDOW_MS),
           lte: new Date(),
         },
       },
@@ -169,7 +148,7 @@ export class OutboundMessagesService {
     return !!latest;
   }
   async process(messageId: string): Promise<'processed' | 'terminal' | 'busy'> {
-    if (!this.config.enabled && !this.messengerConfig?.enabled) return 'busy';
+    if (!this.transports.anyEnabled) return 'busy';
     const token = randomUUID();
     const claimed = await this.transactions.run(async (tx) => {
       await tx.$queryRaw`SELECT id FROM messages WHERE id = ${messageId} FOR UPDATE`;
@@ -183,13 +162,9 @@ export class OutboundMessagesService {
         !['QUEUED', 'SENDING'].includes(message.status)
       )
         return 'terminal' as const;
-      const facebook = message.channel === 'FACEBOOK';
-      if (facebook ? !this.messengerConfig?.enabled : !this.config.enabled)
-        return 'busy' as const;
-      const prefix = facebook ? 'MESSENGER' : 'WHATSAPP';
-      const recipient = facebook
-        ? message.recipientExternalId
-        : message.recipientPhone;
+      const transport = this.transports.find(message.channel);
+      if (transport && !transport.enabled) return 'busy' as const;
+      const prefix = this.transports.errorPrefix(message.channel);
       if (message.status === 'SENDING') {
         if (message.processingUntil && message.processingUntil > new Date())
           return 'busy' as const;
@@ -202,16 +177,15 @@ export class OutboundMessagesService {
         message.outbox.availableAt > new Date()
       )
         return 'busy' as const;
+      const recipient = transport ? message[transport.recipientField] : null;
       if (
+        !transport ||
         message.processingAttempts >= MESSAGE_ATTEMPTS ||
-        !['WHATSAPP', 'FACEBOOK'].includes(message.channel) ||
         message.type !== 'TEXT' ||
         !message.content ||
         !recipient ||
-        (facebook &&
-          (!this.messengerAdapter || message.content.length > 2000)) ||
-        message.providerAccountId !==
-          (facebook ? this.messengerConfig!.pageId : this.config.phoneId)
+        message.content.length > transport.maxTextLength ||
+        message.providerAccountId !== transport.providerAccountId
       ) {
         await this.finish(tx, messageId, 'FAILED', `${prefix}_SEND_INVALID`);
         return 'terminal' as const;
@@ -220,8 +194,8 @@ export class OutboundMessagesService {
         !(await this.windowOpen(
           tx,
           message.conversationId,
+          transport,
           recipient,
-          facebook ? 'FACEBOOK' : 'WHATSAPP',
         ))
       ) {
         await this.finish(tx, messageId, 'FAILED', `${prefix}_WINDOW_CLOSED`);
@@ -238,23 +212,22 @@ export class OutboundMessagesService {
       });
     });
     if (typeof claimed === 'string') return claimed;
-    const facebook = claimed.channel === 'FACEBOOK';
-    const prefix = facebook ? 'MESSENGER' : 'WHATSAPP';
+    // The claim only succeeds for a channel with an enabled transport.
+    const transport = this.transports.find(claimed.channel)!;
+    const prefix = transport.errorPrefix;
     // Never include the external POST inside a retried database transaction.
     let externalMessageId: string | undefined;
-    let failure: WhatsAppSendError | undefined;
+    let failure: ChannelSendError | undefined;
     try {
-      externalMessageId = await (
-        facebook ? this.messengerAdapter! : this.adapter
-      ).sendMessage(
-        (facebook ? claimed.recipientExternalId : claimed.recipientPhone)!,
+      externalMessageId = await transport.sendMessage(
+        claimed[transport.recipientField]!,
         claimed.content!,
       );
     } catch (error) {
       failure =
-        error instanceof WhatsAppSendError
+        error instanceof ChannelSendError
           ? error
-          : new WhatsAppSendError('unknown');
+          : new ChannelSendError('unknown');
       if (failure.diagnostic) {
         this.logger.warn(
           JSON.stringify({
@@ -286,7 +259,7 @@ export class OutboundMessagesService {
         return 'processed' as const;
       }
       if (
-        isRetryableWhatsAppError(failure) &&
+        isRetryableSendError(failure) &&
         current.processingAttempts < MESSAGE_ATTEMPTS &&
         current.status === 'SENDING'
       ) {

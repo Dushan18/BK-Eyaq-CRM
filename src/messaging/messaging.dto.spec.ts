@@ -71,6 +71,35 @@ describe('Mensajería: validación', () => {
   ])('rechaza comando inválido %#', (body) => {
     expect(() => validateInboundMessage(body)).toThrow();
   });
+  it('acepta una identidad de proveedor (PSID) sin teléfono ni correo', () => {
+    expect(
+      validateInboundMessage({
+        ...command(),
+        channel: 'FACEBOOK',
+        providerAccountId: '123',
+        contact: { externalId: '456' },
+      }),
+    ).toMatchObject({ contact: { externalId: '456' } });
+  });
+  it.each([
+    [{ externalId: 'psid-456' }, '123'],
+    [{ externalId: '456' }, undefined],
+    [{ externalId: '456' }, 'page-123'],
+    [{ externalId: '456', phone: '+51987654321' }, '123'],
+    [{ externalId: '456', email: 'ana@example.com' }, '123'],
+  ])(
+    'rechaza identidad de proveedor ambigua o no numérica %#',
+    (contact, providerAccountId) => {
+      expect(() =>
+        validateInboundMessage({
+          ...command(),
+          channel: 'FACEBOOK',
+          providerAccountId,
+          contact,
+        }),
+      ).toThrow();
+    },
+  );
   it.each(['IMAGE', 'FILE'])('acepta metadata %s, sin binario', (type) => {
     const parsed = validateInboundMessage({
       ...command(),

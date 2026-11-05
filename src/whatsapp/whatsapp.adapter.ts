@@ -4,33 +4,16 @@ import {
   validateInboundMessage,
   type InboundMessageCommand,
 } from '../messaging/inbound-message.command';
-import { WhatsAppConfig } from './whatsapp.config';
-import { createHash } from 'node:crypto';
 import {
-  readSendDiagnostic,
-  type WhatsAppSendDiagnostic,
-} from './whatsapp-send-diagnostic';
+  ChannelSendError,
+  type ChannelDeliveryStatus,
+  type ChannelRecipientSource,
+  type ChannelTransport,
+} from '../messaging/channel-transport';
+import { readSendDiagnostic } from '../messaging/send-diagnostic';
+import { fingerprint } from '../messaging/meta-webhook';
+import { WhatsAppConfig } from './whatsapp.config';
 
-export interface WhatsAppStatus {
-  externalMessageId: string;
-  providerAccountId: string;
-  status: 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
-  occurredAt: Date;
-}
-export class WhatsAppSendError extends Error {
-  constructor(
-    readonly outcome: 'retry' | 'failed' | 'unknown',
-    readonly retryAfterMs = 1000,
-    readonly diagnostic?: WhatsAppSendDiagnostic,
-  ) {
-    super(`WHATSAPP_SEND_${outcome.toUpperCase()}`);
-  }
-}
-export function isRetryableWhatsAppError(
-  error: unknown,
-): error is WhatsAppSendError {
-  return error instanceof WhatsAppSendError && error.outcome === 'retry';
-}
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new BadRequestException('Evento WhatsApp inválido');
@@ -50,6 +33,26 @@ function text(value: unknown, max = 255): string {
 function optionalText(value: unknown, max: number) {
   return value === undefined ? undefined : text(value, max);
 }
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+// Name of a webhook contact: the WhatsApp username (shown with "@") when there is one, else
+// the profile name the person chose. Lenient: a malformed contact only means "no name", it
+// never rejects the message.
+function contactName(contact: Record<string, unknown> | null): string | null {
+  const profile = record(contact?.profile);
+  if (typeof profile?.username === 'string') {
+    const handle = profile.username.trim().replace(/^@/, '');
+    if (/^[A-Za-z0-9._]{1,35}$/.test(handle)) return `@${handle}`;
+  }
+  if (typeof profile?.name === 'string') {
+    const name = profile.name.trim().slice(0, 100).trim();
+    if (name) return name;
+  }
+  return null;
+}
 function timestamp(value: unknown): Date {
   const seconds = text(value, 12);
   if (!/^\d+$/.test(seconds))
@@ -62,26 +65,44 @@ function timestamp(value: unknown): Date {
 }
 
 @Injectable()
-export class WhatsAppAdapter implements MessagingChannelAdapter {
+export class WhatsAppAdapter
+  implements MessagingChannelAdapter, ChannelTransport
+{
   readonly channel = 'WHATSAPP' as const;
+  readonly errorPrefix = 'WHATSAPP';
+  readonly label = 'WhatsApp';
+  readonly maxTextLength = 4096;
+  readonly windowClosedMessage =
+    'Ventana de WhatsApp cerrada; se requiere una plantilla aprobada';
+  readonly recipientField = 'recipientPhone' as const;
   constructor(private readonly config: WhatsAppConfig) {}
+  get enabled() {
+    return this.config.enabled;
+  }
+  get providerAccountId() {
+    return this.config.phoneId;
+  }
+  assertEnabled() {
+    this.config.assertEnabled();
+  }
+  recipientOf(customer: ChannelRecipientSource) {
+    return customer.normalizedPhone;
+  }
   parseInboundEvent(event: unknown): Promise<InboundMessageCommand[]> {
     return Promise.resolve(this.parse(event).messages);
   }
   parse(event: unknown) {
     const messages: InboundMessageCommand[] = [];
-    const statuses: WhatsAppStatus[] = [];
+    const statuses: ChannelDeliveryStatus[] = [];
     const rejected: string[] = [];
+    // Sender name of each parsed message (by externalMessageId), from value.contacts.
+    const names = new Map<string, string>();
     const guard = (raw: unknown, operation: () => void) => {
       try {
         operation();
       } catch (error) {
         if (!(error instanceof BadRequestException)) throw error;
-        rejected.push(
-          createHash('sha256')
-            .update(JSON.stringify(raw) ?? 'null')
-            .digest('hex'),
-        );
+        rejected.push(fingerprint(raw));
       }
     };
     guard(event, () => {
@@ -100,6 +121,16 @@ export class WhatsAppAdapter implements MessagingChannelAdapter {
                 object(value.metadata).phone_number_id !== this.config.phoneId
               )
                 return;
+              const senders = new Map<string, string>();
+              const contacts: unknown[] = Array.isArray(value.contacts)
+                ? value.contacts
+                : [];
+              for (const raw of contacts) {
+                const contact = record(raw);
+                const name = contactName(contact);
+                if (name && typeof contact?.wa_id === 'string')
+                  senders.set(contact.wa_id, name);
+              }
               for (const raw of list(value.messages))
                 guard(raw, () => {
                   const message = object(raw);
@@ -147,6 +178,8 @@ export class WhatsAppAdapter implements MessagingChannelAdapter {
                     };
                   }
                   messages.push(validateInboundMessage(command));
+                  const name = senders.get(from);
+                  if (name) names.set(base.externalMessageId, name);
                 });
               for (const raw of list(value.statuses))
                 guard(raw, () => {
@@ -162,14 +195,14 @@ export class WhatsAppAdapter implements MessagingChannelAdapter {
                     providerAccountId: this.config.phoneId,
                     status: String(
                       status.status,
-                    ).toUpperCase() as WhatsAppStatus['status'],
+                    ).toUpperCase() as ChannelDeliveryStatus['status'],
                     occurredAt: timestamp(status.timestamp),
                   });
                 });
             });
         });
     });
-    return { messages, statuses, rejected };
+    return { messages, statuses, rejected, names };
   }
   async sendMessage(to: string, content: string): Promise<string> {
     this.config.assertEnabled();
@@ -194,7 +227,7 @@ export class WhatsAppAdapter implements MessagingChannelAdapter {
         },
       );
     } catch {
-      throw new WhatsAppSendError('unknown');
+      throw new ChannelSendError('unknown');
     }
     // Only an explicit rate-limit rejection is automatically retried. Network/5xx
     // may occur after acceptance; never assume provider-side idempotency.
@@ -204,20 +237,20 @@ export class WhatsAppAdapter implements MessagingChannelAdapter {
     if (response.status === 429) {
       const retry = response.headers.get('retry-after');
       const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : 1;
-      throw new WhatsAppSendError(
+      throw new ChannelSendError(
         'retry',
         Math.min(3600000, Math.max(1000, seconds * 1000)),
         diagnostic,
       );
     }
     if (response.status >= 500 || response.status === 408)
-      throw new WhatsAppSendError('unknown', 1000, diagnostic);
-    if (!response.ok) throw new WhatsAppSendError('failed', 1000, diagnostic);
+      throw new ChannelSendError('unknown', 1000, diagnostic);
+    if (!response.ok) throw new ChannelSendError('failed', 1000, diagnostic);
     try {
       const result = object(await response.json());
       return text(object(list(result.messages)[0]).id);
     } catch {
-      throw new WhatsAppSendError('unknown');
+      throw new ChannelSendError('unknown');
     }
   }
 }

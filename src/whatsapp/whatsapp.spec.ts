@@ -10,12 +10,13 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 import { createHmac } from 'node:crypto';
 import { WhatsAppConfig } from './whatsapp.config';
-import { WhatsAppAdapter, WhatsAppSendError } from './whatsapp.adapter';
+import { WhatsAppAdapter } from './whatsapp.adapter';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppController } from './whatsapp.controller';
 import type { MessagesService } from '../messaging/messages.service';
 import type { MessageStatusService } from '../messaging/message-status.service';
-import type { PrismaService } from '../database/prisma.service';
+import type { CustomersService } from '../customers/customers.service';
+import { ChannelSendError } from '../messaging/channel-transport';
 import { nextDeliveryStatus } from '../messaging/message-status.service';
 import { OutboundMessageDto } from '../messaging/outbound-message.dto';
 import { plainToInstance } from 'class-transformer';
@@ -196,7 +197,7 @@ describe('WhatsApp configuración y adapter', () => {
       fetchMock.mockRejectedValue(new Error('Authorization: SECRET'));
       await expect(
         new WhatsAppAdapter(config()).sendMessage('+51987654321', 'Hola'),
-      ).rejects.toEqual(new WhatsAppSendError('unknown'));
+      ).rejects.toEqual(new ChannelSendError('unknown'));
     });
     it.each([
       [400, 'failed'],
@@ -243,19 +244,119 @@ describe('WhatsApp configuración y adapter', () => {
   });
 });
 
+describe('Nombre del cliente de WhatsApp', () => {
+  const withContacts = (contacts: unknown, messages = [message()]) => {
+    const payload = event(messages);
+    Object.assign(payload.entry[0].changes[0].value, { contacts });
+    return payload;
+  };
+  const contact = (profile: unknown, waId = '51987654321') => ({
+    wa_id: waId,
+    profile,
+  });
+  const namesOf = (payload: unknown) =>
+    Object.fromEntries(new WhatsAppAdapter(config()).parse(payload).names);
+  it('usa el nombre de usuario con @ y, si no hay, el nombre del perfil', () => {
+    expect(
+      namesOf(withContacts([contact({ name: 'Ana', username: 'ana.q' })])),
+    ).toEqual({ 'wamid.test': '@ana.q' });
+    expect(namesOf(withContacts([contact({ username: '@ana_q' })]))).toEqual({
+      'wamid.test': '@ana_q',
+    });
+    expect(
+      namesOf(withContacts([contact({ name: '  Mamá Rosa 🌸  ' })])),
+    ).toEqual({ 'wamid.test': 'Mamá Rosa 🌸' });
+    expect(
+      namesOf(withContacts([contact({ name: 'Ana', username: 'no válido' })])),
+    ).toEqual({ 'wamid.test': 'Ana' });
+  });
+  it('asigna cada nombre al remitente de su mensaje', () => {
+    expect(
+      namesOf(
+        withContacts(
+          [contact({ name: 'Ana' }), contact({ name: 'Luis' }, '51911111111')],
+          [message(), message({ id: 'wamid.luis', from: '51911111111' })],
+        ),
+      ),
+    ).toEqual({ 'wamid.test': 'Ana', 'wamid.luis': 'Luis' });
+  });
+  it.each([
+    ['sin contacts', undefined],
+    ['contacts que no es lista', { wa_id: '51987654321' }],
+    ['contacto nulo', [null]],
+    ['sin perfil', [{ wa_id: '51987654321' }]],
+    ['perfil vacío', [contact({ name: '   ', username: '' })]],
+    ['otro remitente', [contact({ name: 'Otra persona' }, '51900000000')]],
+  ])('%s: el mensaje se guarda igual, sin nombre ni rechazo', (_, contacts) => {
+    const result = new WhatsAppAdapter(config()).parse(withContacts(contacts));
+    expect(result.messages).toHaveLength(1);
+    expect(result.rejected).toEqual([]);
+    expect(result.names.size).toBe(0);
+  });
+  it('nombra solo a clientes sin nombre, una vez, sin depender de Meta', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    const setNameIfMissing = jest.fn().mockResolvedValue(true);
+    const stored = (
+      id: string,
+      firstName: string | null,
+      externalMessageId: string,
+    ) => ({
+      command: { externalMessageId, contact: { phone: '+51987654321' } },
+      customer: { id, firstName, lastName: null },
+    });
+    const payload = withContacts(
+      [contact({ name: 'Ana' }), contact({ name: 'Luis' }, '51911111111')],
+      [
+        message(),
+        message({ id: 'wamid.two' }),
+        message({ id: 'wamid.luis', from: '51911111111' }),
+      ],
+    );
+    const raw = JSON.stringify(payload);
+    await expect(
+      new WhatsAppService(
+        config(),
+        new WhatsAppAdapter(config()),
+        {
+          ingestFromProvider: jest
+            .fn()
+            .mockResolvedValue([
+              stored('ana', null, 'wamid.test'),
+              stored('ana', null, 'wamid.two'),
+              stored('luis', 'Nombre del CRM', 'wamid.luis'),
+            ]),
+          quarantine: jest.fn(),
+        } as unknown as MessagesService,
+        { accept: jest.fn() } as unknown as MessageStatusService,
+        { setNameIfMissing } as unknown as CustomersService,
+      ).receive(
+        Buffer.from(raw),
+        'sha256=' +
+          createHmac('sha256', settings.META_APP_SECRET)
+            .update(raw)
+            .digest('hex'),
+      ),
+    ).resolves.toEqual({ received: true });
+    expect(setNameIfMissing.mock.calls).toEqual([['ana', 'Ana']]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
+  });
+});
+
 describe('Webhook HTTP con bytes reales', () => {
   let app: INestApplication;
-  const ingest = jest.fn().mockResolvedValue({});
+  const ingest = jest.fn().mockResolvedValue([]);
   const accept = jest.fn().mockResolvedValue(undefined);
-  const quarantine = jest.fn().mockResolvedValue({ count: 1 });
+  const quarantine = jest.fn().mockResolvedValue(undefined);
   const service = new WhatsAppService(
     config(),
     new WhatsAppAdapter(config()),
-    { ingestInboundMessage: ingest } as unknown as MessagesService,
-    { accept } as unknown as MessageStatusService,
     {
-      messagingWebhookRejection: { createMany: quarantine },
-    } as unknown as PrismaService,
+      ingestFromProvider: ingest,
+      quarantine,
+    } as unknown as MessagesService,
+    { accept } as unknown as MessageStatusService,
+    { setNameIfMissing: jest.fn() } as unknown as CustomersService,
   );
   const sign = (body: string) =>
     'sha256=' +
@@ -350,8 +451,11 @@ describe('Webhook HTTP con bytes reales', () => {
       .spyOn(Logger.prototype, 'warn')
       .mockImplementation(() => undefined);
     try {
-      await service.receive(Buffer.from(raw), sign(raw), JSON.parse(raw));
-      expect(quarantine).toHaveBeenCalledTimes(1);
+      await service.receive(Buffer.from(raw), sign(raw));
+      expect(quarantine).toHaveBeenCalledWith(
+        [expect.stringMatching(/^[a-f0-9]{64}$/)],
+        'WHATSAPP_EVENT_INVALID',
+      );
       const logs = JSON.stringify(log.mock.calls);
       for (const value of [
         settings.WHATSAPP_ACCESS_TOKEN,
@@ -365,9 +469,9 @@ describe('Webhook HTTP con bytes reales', () => {
     }
   });
   it('sin raw body no procesa', async () => {
-    await expect(
-      service.receive(undefined, sign('{}'), {}),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.receive(undefined, sign('{}'))).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
   });
 });
 

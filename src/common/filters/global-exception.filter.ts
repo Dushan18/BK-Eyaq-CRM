@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { STATUS_CODES } from 'node:http';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -28,7 +29,8 @@ interface ErrorLogContext {
 export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(GlobalExceptionFilter.name);
 
-  catch(exception: unknown, host: ArgumentsHost): void {
+  catch(caught: unknown, host: ArgumentsHost): void {
+    const exception = this.toClientException(caught) ?? caught;
     const httpContext = host.switchToHttp();
     const response = httpContext.getResponse<Response>();
     const request = httpContext.getRequest<AuthenticatedRequest>();
@@ -61,6 +63,37 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       method: request.method,
       timestamp,
     });
+  }
+
+  // Express y body-parser marcan los errores del cliente con un status 4xx y
+  // `expose: true` (convención de http-errors), p. ej. un body de más de 100 kb.
+  // Nest solo traduce los SyntaxError, así que sin esto responderían 500.
+  private toClientException(exception: unknown): HttpException | undefined {
+    if (
+      !(exception instanceof Error) ||
+      !('expose' in exception) ||
+      exception.expose !== true ||
+      !('status' in exception) ||
+      typeof exception.status !== 'number' ||
+      exception.status < 400 ||
+      exception.status > 499
+    ) {
+      return undefined;
+    }
+
+    const message =
+      exception.status === Number(HttpStatus.PAYLOAD_TOO_LARGE)
+        ? 'El cuerpo de la petición supera el tamaño máximo permitido'
+        : exception.message;
+
+    return new HttpException(
+      HttpException.createBody(
+        message,
+        STATUS_CODES[exception.status] ?? 'Error',
+        exception.status,
+      ),
+      exception.status,
+    );
   }
 
   private createHttpExceptionBody(

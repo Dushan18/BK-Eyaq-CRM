@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Prisma } from '../../generated/prisma/client';
+import type { ContactChannel } from '../../generated/prisma/enums';
 import { PrismaService } from '../database/prisma.service';
 import { normalizeContact } from '../common/contact-normalization';
 import {
@@ -150,16 +151,16 @@ export class CustomersService {
       });
       if (!current) throw new NotFoundException('Cliente no encontrado');
       const providerIdentity =
-        current.sourceChannel === 'FACEBOOK' &&
+        ['FACEBOOK', 'INSTAGRAM'].includes(current.sourceChannel) &&
         !!current.providerAccountId &&
         !!current.externalContactId;
       if (
         providerIdentity &&
         dto.sourceChannel !== undefined &&
-        dto.sourceChannel !== 'FACEBOOK'
+        dto.sourceChannel !== current.sourceChannel
       )
         throw new BadRequestException(
-          'No se puede cambiar el canal de una identidad de Messenger',
+          'No se puede cambiar el canal de una identidad del proveedor',
         );
       const contact = normalizeContact(
         {
@@ -270,6 +271,48 @@ export class CustomersService {
       });
     };
     return transaction ? operation(transaction) : this.transaction(operation);
+  }
+
+  // Provider-scoped identities (a Messenger PSID within its Page) match exactly and are
+  // never merged into phone/email customers automatically.
+  async findOrCreateByProviderIdentity(
+    identity: {
+      sourceChannel: ContactChannel;
+      providerAccountId: string;
+      externalContactId: string;
+    },
+    transaction?: Prisma.TransactionClient,
+  ) {
+    const operation = async (tx: Prisma.TransactionClient) => {
+      const now = new Date();
+      const existing = await tx.customer.findUnique({
+        where: { sourceChannel_providerAccountId_externalContactId: identity },
+        select: { id: true },
+      });
+      if (existing) {
+        await this.touch(tx, existing.id, now);
+        return tx.customer.findUniqueOrThrow({
+          where: { id: existing.id },
+          select: customerSelect,
+        });
+      }
+      return tx.customer.create({
+        data: { ...identity, firstContactAt: now, lastContactAt: now },
+        select: customerSelect,
+      });
+    };
+    return transaction ? operation(transaction) : this.transaction(operation);
+  }
+
+  // A provider-supplied display name only fills a customer nobody has named yet.
+  async setNameIfMissing(id: string, name: string) {
+    const firstName = name.trim().slice(0, 100).trim();
+    if (!firstName) return false;
+    const result = await this.prisma.customer.updateMany({
+      where: { id, firstName: null, lastName: null },
+      data: { firstName },
+    });
+    return result.count > 0;
   }
 
   async addInterest(customerId: string, dto: CreateCustomerInterestDto) {

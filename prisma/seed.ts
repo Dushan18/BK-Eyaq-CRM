@@ -1,6 +1,6 @@
 import 'dotenv/config';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, RoleCode } from '../generated/prisma/client';
+import { createPgAdapter } from '../src/database/pg-adapter';
 import * as bcrypt from 'bcrypt';
 import { seedCommercialCatalog } from './seed-commercial-catalog';
 
@@ -10,8 +10,7 @@ if (!databaseUrl) {
     throw new Error('La variable de entorno DATABASE_URL es obligatoria');
 }
 
-const adapter = new PrismaPg({ connectionString: databaseUrl });
-const prisma = new PrismaClient({ adapter });
+const prisma = new PrismaClient({ adapter: createPgAdapter(databaseUrl) });
 
 async function main(): Promise<void> {
     const roles = [

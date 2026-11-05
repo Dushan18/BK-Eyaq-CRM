@@ -1,4 +1,4 @@
-export interface WhatsAppSendDiagnostic {
+export interface SendDiagnostic {
   httpStatus: number;
   metaCode?: number;
   metaSubcode?: number;
@@ -9,8 +9,8 @@ export interface WhatsAppSendDiagnostic {
 // and credentials. A strict allowlist is safer than redacting arbitrary text.
 export async function readSendDiagnostic(
   response: Response,
-): Promise<WhatsAppSendDiagnostic> {
-  const diagnostic: WhatsAppSendDiagnostic = { httpStatus: response.status };
+): Promise<SendDiagnostic> {
+  const diagnostic: SendDiagnostic = { httpStatus: response.status };
   const reader = response.body?.getReader();
   if (!reader) return diagnostic;
   let timer: ReturnType<typeof setTimeout> | undefined;

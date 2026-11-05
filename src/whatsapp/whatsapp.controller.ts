@@ -30,10 +30,6 @@ export class WhatsAppController {
     @Req() request: RawBodyRequest<Request>,
     @Headers('x-hub-signature-256') signature?: string,
   ) {
-    return this.service.receive(
-      request.rawBody,
-      signature,
-      request.body as unknown,
-    );
+    return this.service.receive(request.rawBody, signature);
   }
 }

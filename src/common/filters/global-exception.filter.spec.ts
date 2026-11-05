@@ -2,6 +2,7 @@ import 'reflect-metadata';
 
 import {
   BadRequestException,
+  Body,
   ConflictException,
   Controller,
   ForbiddenException,
@@ -9,6 +10,7 @@ import {
   INestApplication,
   Logger,
   NotFoundException,
+  Post,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -82,6 +84,11 @@ class ExceptionFilterTestController {
   @Get('service-unavailable')
   serviceUnavailable(): never {
     throw new ServiceUnavailableException(degradedHealthResponse);
+  }
+
+  @Post('body')
+  echo(@Body() body: unknown): unknown {
+    return body;
   }
 
   @Get('unexpected')
@@ -217,6 +224,35 @@ describe('GlobalExceptionFilter', () => {
       statusCode: 400,
     });
     expect(Array.isArray(body.message)).toBe(true);
+    expect(loggerErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('responde 413 cuando el body supera el límite del parser', async () => {
+    const response = await request(httpServer)
+      .post('/exception-filter-test/body')
+      .send({ content: 'x'.repeat(101 * 1024) })
+      .expect(413);
+
+    expect(response.body).toEqual({
+      message: 'El cuerpo de la petición supera el tamaño máximo permitido',
+      error: 'Payload Too Large',
+      statusCode: 413,
+    });
+    expect(loggerErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('conserva el código de los demás errores de cliente del parser', async () => {
+    const response = await request(httpServer)
+      .post('/exception-filter-test/body')
+      .set('Content-Type', 'application/json; charset=latin1')
+      .send('{"content":"x"}')
+      .expect(415);
+
+    expect(response.body).toEqual({
+      message: 'unsupported charset "LATIN1"',
+      error: 'Unsupported Media Type',
+      statusCode: 415,
+    });
     expect(loggerErrorSpy).not.toHaveBeenCalled();
   });
 

@@ -85,7 +85,8 @@ export class CommercialCategoriesService {
   }
 
   async update(id: string, dto: UpdateCommercialCategoryDto) {
-    if (Object.keys(dto).length === 0) {
+    // El ValidationPipe declara cada campo del DTO aunque no llegue en el body.
+    if (!Object.values(dto).some((value) => value !== undefined)) {
       throw new BadRequestException(
         'Debes proporcionar al menos un campo para actualizar',
       );

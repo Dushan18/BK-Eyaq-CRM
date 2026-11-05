@@ -1,15 +1,22 @@
-import {
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { Injectable, Logger } from '@nestjs/common';
 import { MessengerConfig } from './messenger.config';
-import { MessengerAdapter, type MessengerInbound } from './messenger.adapter';
-import { MessagingTransactionService } from '../messaging/messaging-transaction.service';
+import {
+  MessengerAdapter,
+  type MessengerDeliveryWatermark,
+} from './messenger.adapter';
+import { MessagesService } from '../messaging/messages.service';
 import { MessageStatusService } from '../messaging/message-status.service';
+import { CustomersService } from '../customers/customers.service';
 import { PrismaService } from '../database/prisma.service';
+import type { ChannelDeliveryStatus } from '../messaging/channel-transport';
+import { recordContactNames } from '../messaging/contact-names';
+import { parseSignedEvent, verifyChallenge } from '../messaging/meta-webhook';
+
+// sentAt is recorded once Meta has answered, so it is never earlier than Meta's acceptance
+// (the watermark's clock). The margin absorbs that response latency plus clock skew: a reply
+// accepted within it after the watermark may be confirmed along with it, while one whose
+// response took longer waits for a later receipt.
+export const WATERMARK_TOLERANCE_MS = 2000;
 
 @Injectable()
 export class MessengerService {
@@ -17,64 +24,49 @@ export class MessengerService {
   constructor(
     private readonly config: MessengerConfig,
     private readonly adapter: MessengerAdapter,
-    private readonly transactions: MessagingTransactionService,
+    private readonly messages: MessagesService,
     private readonly statuses: MessageStatusService,
+    private readonly customers: CustomersService,
     private readonly prisma: PrismaService,
   ) {}
   verify(mode: unknown, token: unknown, challenge: unknown) {
     this.config.assertEnabled();
-    const expected = Buffer.from(this.config.verifyToken);
-    const actual = Buffer.from(typeof token === 'string' ? token : '');
-    if (
-      mode !== 'subscribe' ||
-      typeof challenge !== 'string' ||
-      !challenge ||
-      actual.length !== expected.length ||
-      !timingSafeEqual(actual, expected)
-    )
-      throw new ForbiddenException('Verificación inválida');
-    return challenge;
+    return verifyChallenge(this.config.verifyToken, mode, token, challenge);
   }
   async receive(raw: Buffer | undefined, signature: string | undefined) {
     this.config.assertEnabled();
-    if (!raw || !signature || !/^sha256=[a-fA-F0-9]{64}$/.test(signature))
-      throw new ForbiddenException('Firma inválida');
-    const expected = createHmac('sha256', this.config.appSecret)
-      .update(raw)
-      .digest();
-    if (!timingSafeEqual(Buffer.from(signature.slice(7), 'hex'), expected))
-      throw new ForbiddenException('Firma inválida');
-    // Parse exactly the bytes authenticated by the signature.
-    let event: unknown;
-    try {
-      event = JSON.parse(raw.toString('utf8')) as unknown;
-    } catch {
-      event = null;
-    }
-    const parsed = this.adapter.parse(event);
-    for (const message of parsed.messages) {
-      try {
-        await this.ingest(message);
-      } catch (error) {
-        if (
-          !(error instanceof ConflictException) ||
-          error.message !== 'MESSENGER_IDENTITY_CONFLICT'
-        )
-          throw error;
-        parsed.rejected.push(
-          createHash('sha256').update(JSON.stringify(message)).digest('hex'),
-        );
-      }
-    }
-    await this.statuses.accept(parsed.statuses, 'FACEBOOK');
+    const parsed = this.adapter.parse(
+      parseSignedEvent(raw, signature, this.config.appSecret),
+    );
+    const created = await this.messages.ingestFromProvider(
+      parsed.messages,
+      parsed.rejected,
+    );
+    await this.statuses.accept(
+      [
+        ...parsed.statuses,
+        ...(await this.deliveredByWatermark(
+          parsed.watermarks,
+          parsed.statuses,
+        )),
+      ],
+      'FACEBOOK',
+    );
+    const named = await recordContactNames(
+      created,
+      ({ externalMessageId, contact }) =>
+        contact.externalId
+          ? this.adapter.fetchSenderName(externalMessageId, contact.externalId)
+          : null,
+      (customerId, name) => this.customers.setNameIfMissing(customerId, name),
+    );
+    if (!named)
+      this.logger.warn(JSON.stringify({ code: 'MESSENGER_NAME_UNAVAILABLE' }));
     if (parsed.rejected.length) {
-      await this.prisma.messagingWebhookRejection.createMany({
-        data: parsed.rejected.map((fingerprint) => ({
-          fingerprint,
-          code: 'MESSENGER_EVENT_INVALID',
-        })),
-        skipDuplicates: true,
-      });
+      await this.messages.quarantine(
+        parsed.rejected,
+        'MESSENGER_EVENT_INVALID',
+      );
       this.logger.warn(
         JSON.stringify({
           code: 'MESSENGER_EVENT_QUARANTINED',
@@ -84,63 +76,44 @@ export class MessengerService {
     }
     return { received: true };
   }
-  private async ingest(command: MessengerInbound) {
-    return this.transactions.run(async (tx) => {
-      const existing = await tx.message.findUnique({
+  // Every reply sent at or before the watermark was delivered, even if no mids are listed.
+  // Evaluated once on arrival and not stored: a reply that is not SENT yet at that moment
+  // (still SENDING, or UNKNOWN) is only confirmed by a later receipt.
+  private async deliveredByWatermark(
+    watermarks: MessengerDeliveryWatermark[],
+    listed: ChannelDeliveryStatus[],
+  ) {
+    const known = new Set(listed.map((status) => status.externalMessageId));
+    const statuses: ChannelDeliveryStatus[] = [];
+    for (const { recipientId, watermark, occurredAt } of watermarks) {
+      const sent = await this.prisma.message.findMany({
         where: {
-          channel_externalMessageId: {
-            channel: 'FACEBOOK',
-            externalMessageId: command.externalMessageId,
+          channel: 'FACEBOOK',
+          direction: 'OUTBOUND',
+          status: 'SENT',
+          providerAccountId: this.config.pageId,
+          recipientExternalId: recipientId,
+          externalMessageId: { not: null },
+          sentAt: {
+            lte: new Date(watermark.getTime() + WATERMARK_TOLERANCE_MS),
           },
         },
+        select: { externalMessageId: true, sentAt: true },
+        orderBy: { sentAt: 'asc' },
+        take: 100,
       });
-      if (existing) {
-        if (
-          existing.direction !== 'INBOUND' ||
-          existing.providerAccountId !== command.pageId ||
-          existing.recipientExternalId !== command.senderId
-        )
-          throw new ConflictException('MESSENGER_IDENTITY_CONFLICT');
-        return;
+      for (const { externalMessageId, sentAt } of sent) {
+        if (!externalMessageId || known.has(externalMessageId)) continue;
+        known.add(externalMessageId);
+        statuses.push({
+          externalMessageId,
+          providerAccountId: this.config.pageId,
+          status: 'DELIVERED',
+          // Reconcile keeps the earliest times; never date a delivery before its send.
+          occurredAt: sentAt && sentAt > occurredAt ? sentAt : occurredAt,
+        });
       }
-      const identity = {
-        sourceChannel: 'FACEBOOK' as const,
-        providerAccountId: command.pageId,
-        externalContactId: command.senderId,
-      };
-      const customer = await tx.customer.upsert({
-        where: { sourceChannel_providerAccountId_externalContactId: identity },
-        create: identity,
-        update: { lastContactAt: new Date() },
-      });
-      const conversation = await tx.conversation.upsert({
-        where: {
-          customerId_channel: { customerId: customer.id, channel: 'FACEBOOK' },
-        },
-        create: { customerId: customer.id, channel: 'FACEBOOK' },
-        update: {},
-      });
-      const current = await tx.conversation.update({
-        where: { id: conversation.id },
-        data: { lastSequence: { increment: 1 }, lastMessageAt: new Date() },
-      });
-      await tx.message.create({
-        data: {
-          conversationId: conversation.id,
-          channel: 'FACEBOOK',
-          sequence: current.lastSequence,
-          externalMessageId: command.externalMessageId,
-          providerAccountId: command.pageId,
-          recipientExternalId: command.senderId,
-          direction: 'INBOUND',
-          status: 'RECEIVED',
-          type: command.type,
-          content: command.content,
-          occurredAt: command.occurredAt,
-          receivedAt: new Date(),
-          outbox: { create: {} },
-        },
-      });
-    }, true);
+    }
+    return statuses;
   }
 }

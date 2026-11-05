@@ -567,10 +567,32 @@ Pendientes relacionados con la configuración:
 
 ## Antes de publicar o desplegar
 
+Con `NODE_ENV=production`, el backend no arranca si `JWT_SECRET`, `JWT_REFRESH_SECRET`, `FRONTEND_RESET_PASSWORD_URL` o `RESEND_FROM_EMAIL` siguen con valores de desarrollo o de ejemplo. El error enumera todo lo que hay que corregir.
+
+Variables de producción:
+
+- `NODE_ENV=production`.
+- `JWT_SECRET` y `JWT_REFRESH_SECRET`: aleatorios, de al menos 32 caracteres y distintos entre sí. Puedes generarlos con `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
+- `JWT_EXPIRES_IN=15m` y `JWT_REFRESH_EXPIRES_IN=7d`. La sesión vence a los 7 días del login aunque se renueve.
+- `FRONTEND_RESET_PASSWORD_URL`: `https://<dominio del frontend>/reset-password`.
+- `RESEND_FROM_EMAIL`: un remitente de un dominio verificado en Resend.
+- `ADMIN_EMAIL` y `ADMIN_PASSWORD` propios antes de ejecutar el seed. Solo se usan al crear el administrador.
+- `TRUST_PROXY`: solo si el backend queda detrás de un proxy inverso que envía `X-Forwarded-For` (p. ej. `1`). Los límites de intentos de login y recuperación de contraseña cuentan por IP y por cuenta.
+- WhatsApp, Messenger y Samanta: las variables de sus secciones, con la URL pública de cada webhook.
+
+Despliegue:
+
+1. `npm ci` y `npm run build`.
+2. Con el backend detenido, `npx prisma migrate deploy`. La migración `20261103000000_utc_timestamps` corrige las fechas que se guardaron desplazadas en sesiones de PostgreSQL fuera de UTC; en una base nueva o configurada en UTC no cambia nada.
+   - Aplícala solo con `prisma migrate deploy`. Si además se ejecuta su SQL a mano, las fechas se corrigen dos veces.
+   - El backend no arranca si esa migración no está aplicada o si la sesión de PostgreSQL no queda en UTC (por ejemplo, por un pooler que ignora el parámetro `options` de `DATABASE_URL`).
+   - Para volver a una versión anterior del backend, primero hay que deshacer la corrección con el SQL inverso que indica la propia migración.
+3. Solo la primera vez, `npx prisma db seed`.
+4. `npm run start:prod`.
+
+Además:
+
 - Verifica que `.env` esté ignorado por Git.
-- Usa secretos diferentes para access y refresh tokens.
-- Configura `ADMIN_PASSWORD` antes de ejecutar el seed.
-- Verifica tu dominio en Resend y configura una URL HTTPS del frontend en producción.
 - Elimina endpoints temporales de prueba.
 - No expongas secretos, hashes ni credenciales mediante endpoints o logs.
 

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client } from 'pg';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { createPgAdapter } from '../src/database/pg-adapter';
 import { Test } from '@nestjs/testing';
 import {
   type CanActivate,
@@ -97,7 +97,7 @@ integration('Clientes: integración aislada en PostgreSQL', () => {
       await migrationClient.end();
     }
     prisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: testUrl.toString() }),
+      adapter: createPgAdapter(testUrl.toString()),
     });
     await prisma.$connect();
     const fixture = await Test.createTestingModule({

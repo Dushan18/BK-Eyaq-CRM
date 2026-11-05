@@ -18,6 +18,7 @@ import { MessagingModule } from './messaging/messaging.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { SamantaModule } from './samanta/samanta.module';
 import { MessengerModule } from './messenger/messenger.module';
+import { InstagramModule } from './instagram/instagram.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { MessengerModule } from './messenger/messenger.module';
     MessagingModule,
     WhatsAppModule,
     MessengerModule,
+    InstagramModule,
     SamantaModule,
   ],
   controllers: [AppController],

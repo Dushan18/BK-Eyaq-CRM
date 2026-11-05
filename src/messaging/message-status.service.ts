@@ -1,12 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { MessagingTransactionService } from './messaging-transaction.service';
-import type { WhatsAppStatus } from '../whatsapp/whatsapp.adapter';
-import type { MessageStatus } from '../../generated/prisma/enums';
+import {
+  ChannelTransports,
+  type ChannelDeliveryStatus,
+} from './channel-transport';
+import type {
+  ContactChannel,
+  MessageStatus,
+} from '../../generated/prisma/enums';
 
 export function nextDeliveryStatus(
   current: MessageStatus,
-  incoming: WhatsAppStatus['status'],
+  incoming: ChannelDeliveryStatus['status'],
 ): MessageStatus {
   // Delivery/read evidence wins over failure. A late sent receipt cannot undo failure.
   if (current === 'READ') return current;
@@ -20,11 +26,9 @@ export class MessageStatusService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly transactions: MessagingTransactionService,
+    private readonly transports: ChannelTransports,
   ) {}
-  async accept(
-    events: WhatsAppStatus[],
-    channel: 'WHATSAPP' | 'FACEBOOK' = 'WHATSAPP',
-  ) {
+  async accept(events: ChannelDeliveryStatus[], channel: ContactChannel) {
     if (!events.length) return;
     await this.prisma.messageStatusEvent.createMany({
       data: events.map((event) => ({ ...event, channel })),
@@ -55,7 +59,7 @@ export class MessageStatusService {
           });
           return;
         }
-        const incoming = event.status as WhatsAppStatus['status'];
+        const incoming = event.status as ChannelDeliveryStatus['status'];
         const status = nextDeliveryStatus(message.status, incoming);
         const earliest = (existing: Date | null) =>
           existing && existing < event.occurredAt ? existing : event.occurredAt;
@@ -81,7 +85,7 @@ export class MessageStatusService {
                 : null,
             errorCode:
               status === 'FAILED'
-                ? `${event.channel === 'FACEBOOK' ? 'MESSENGER' : 'WHATSAPP'}_DELIVERY_FAILED`
+                ? `${this.transports.errorPrefix(event.channel)}_DELIVERY_FAILED`
                 : null,
             errorReason: null,
             processingToken: null,
@@ -97,7 +101,7 @@ export class MessageStatusService {
             leaseUntil: null,
             lastErrorCode:
               status === 'FAILED'
-                ? `${event.channel === 'FACEBOOK' ? 'MESSENGER' : 'WHATSAPP'}_DELIVERY_FAILED`
+                ? `${this.transports.errorPrefix(event.channel)}_DELIVERY_FAILED`
                 : null,
           },
         });

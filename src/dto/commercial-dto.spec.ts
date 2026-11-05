@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 
-import { plainToInstance } from 'class-transformer';
+import { ClassConstructor, plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
 
 import {
@@ -21,8 +21,10 @@ import {
   UpdateCommercialItemStatusDto,
 } from './commercial-item.dto';
 import {
+  CommercialEventDetailDto,
   CommercialItemImageDto,
   CommercialItemScheduleDto,
+  CommercialPromotionDetailDto,
 } from './commercial-item-resource.dto';
 
 describe('DTOs comerciales', () => {
@@ -202,6 +204,39 @@ describe('DTOs comerciales', () => {
       expect(hasErrorFor(errors, 'url')).toBe(true);
       expect(hasErrorFor(errors, 'isPrimary')).toBe(true);
     });
+  });
+
+  describe('fechas de promociones y eventos', () => {
+    const errorsFor = (Dto: ClassConstructor<object>, body: object) =>
+      validate(plainToInstance(Dto, body));
+
+    it.each([
+      { Dto: CommercialPromotionDetailDto, field: 'validFrom' },
+      { Dto: CommercialPromotionDetailDto, field: 'validUntil' },
+      { Dto: CommercialEventDetailDto, field: 'startAt' },
+      { Dto: CommercialEventDetailDto, field: 'endAt' },
+    ])(
+      '$field exige un instante real con segundos y zona',
+      async ({ Dto, field }) => {
+        for (const value of [
+          '2026-11-07T20:00:00-05:00',
+          '2026-11-08T01:00:00.000Z',
+          null,
+        ])
+          expect(await errorsFor(Dto, { [field]: value })).toHaveLength(0);
+
+        // Sin zona dependería de la zona horaria del servidor; un día inexistente se correría al mes siguiente.
+        for (const value of [
+          '2026-11-07T20:00:00',
+          '2026-11-07',
+          '2026-11-07T20:00Z',
+          '2026-02-30T10:00:00Z',
+        ])
+          expect(
+            hasErrorFor(await errorsFor(Dto, { [field]: value }), field),
+          ).toBe(true);
+      },
+    );
   });
 
   describe('horarios comerciales', () => {

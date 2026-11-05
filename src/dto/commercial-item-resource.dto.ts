@@ -1,3 +1,4 @@
+import { applyDecorators } from '@nestjs/common';
 import { Transform, TransformFnParams, Type } from 'class-transformer';
 import {
   IsBoolean,
@@ -22,6 +23,22 @@ import { DayOfWeek } from '../../generated/prisma/enums';
 
 export const COMMERCIAL_MONEY_PATTERN = /^(?:0|[1-9]\d{0,7})(?:\.\d{1,2})?$/;
 export const COMMERCIAL_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const COMMERCIAL_INSTANT_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+// Instante explícito, como en reservas: sin zona dependería de la zona horaria
+// del servidor, y el modo estricto rechaza días inexistentes (2026-02-30).
+function CommercialInstant(field: string) {
+  return applyDecorators(
+    IsDateString(
+      { strict: true, strictSeparator: true },
+      { message: `${field} debe ser una fecha ISO 8601 válida` },
+    ),
+    Matches(COMMERCIAL_INSTANT_PATTERN, {
+      message: `${field} debe incluir segundos y zona horaria (Z o ±HH:mm)`,
+    }),
+  );
+}
 
 const trimString = ({ value }: TransformFnParams): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -209,15 +226,12 @@ export class CommercialItemScheduleDto {
 export class CommercialPromotionDetailDto {
   @Transform(trimString)
   @IsOptional()
-  @IsDateString({}, { message: 'validFrom debe ser una fecha ISO 8601 válida' })
+  @CommercialInstant('validFrom')
   validFrom?: string | null;
 
   @Transform(trimString)
   @IsOptional()
-  @IsDateString(
-    {},
-    { message: 'validUntil debe ser una fecha ISO 8601 válida' },
-  )
+  @CommercialInstant('validUntil')
   validUntil?: string | null;
 
   @Transform(trimString)
@@ -233,12 +247,12 @@ export class CommercialPromotionDetailDto {
 export class CommercialEventDetailDto {
   @Transform(trimString)
   @IsOptional()
-  @IsDateString({}, { message: 'startAt debe ser una fecha ISO 8601 válida' })
+  @CommercialInstant('startAt')
   startAt?: string | null;
 
   @Transform(trimString)
   @IsOptional()
-  @IsDateString({}, { message: 'endAt debe ser una fecha ISO 8601 válida' })
+  @CommercialInstant('endAt')
   endAt?: string | null;
 
   @IsOptional()

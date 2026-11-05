@@ -22,6 +22,7 @@ import { RoleCode } from '../../generated/prisma/enums';
 import { Roles } from './decorators/roles.decorator';
 import { RolesGuard } from './guards/roles.guard';
 import { PasswordResetService } from './password-reset.service';
+import { byClientAndAccount } from './throttle-tracker';
 
 @Controller('auth')
 export class AuthController {
@@ -33,7 +34,9 @@ export class AuthController {
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Throttle({
+    default: { limit: 3, ttl: 60_000, getTracker: byClientAndAccount },
+  })
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.passwordResetService.forgotPassword(dto);
   }
@@ -41,12 +44,18 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({
+    default: { limit: 5, ttl: 60_000, getTracker: byClientAndAccount },
+  })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.passwordResetService.resetPassword(dto);
   }
 
   @Post('login')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({
+    default: { limit: 5, ttl: 60_000, getTracker: byClientAndAccount },
+  })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }

@@ -1,5 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
+import 'reflect-metadata';
+
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
 
 import { Prisma } from '../../generated/prisma/client';
 import {
@@ -8,6 +11,7 @@ import {
   DayOfWeek,
 } from '../../generated/prisma/enums';
 import type { PrismaService } from '../database/prisma.service';
+import { UpdateCommercialItemDto } from '../dto/commercial-item.dto';
 import { CommercialItemsService } from './commercial-items.service';
 
 jest.mock('../database/prisma.service', () => ({
@@ -347,6 +351,51 @@ describe('CommercialItemsService', () => {
       total: 1,
       totalPages: 1,
     });
+  });
+
+  it.each([
+    {
+      sort: 'category' as const,
+      orderBy: [
+        { category: { displayOrder: 'asc' } },
+        { category: { nameEs: { sort: 'asc', nulls: 'last' } } },
+        { category: { nameEn: { sort: 'asc', nulls: 'last' } } },
+        { categoryId: 'asc' },
+        { displayOrder: 'asc' },
+        { nameEs: { sort: 'asc', nulls: 'last' } },
+        { nameEn: { sort: 'asc', nulls: 'last' } },
+        { id: 'asc' },
+      ],
+    },
+    {
+      sort: 'name' as const,
+      orderBy: [
+        { nameEs: { sort: 'asc', nulls: 'last' } },
+        { nameEn: { sort: 'asc', nulls: 'last' } },
+        { createdAt: 'desc' },
+        { id: 'asc' },
+      ],
+    },
+  ])(
+    'ordena por $sort de forma total para que las páginas no se solapen',
+    async ({ sort, orderBy }) => {
+      await service.findAll({ page: 1, limit: 20, sort, order: 'asc' });
+
+      expect(itemFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy }),
+      );
+    },
+  );
+
+  it('rechaza un PATCH vacío sin devolver a DRAFT un item aprobado', async () => {
+    // El pipe entrega una instancia del DTO con cada campo declarado en undefined.
+    const dto = plainToInstance(UpdateCommercialItemDto, {});
+
+    await expect(service.update(itemId, dto)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(transaction).not.toHaveBeenCalled();
+    expect(itemUpdate).not.toHaveBeenCalled();
   });
 
   it('devuelve 404 al consultar un item inexistente', async () => {

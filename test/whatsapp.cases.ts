@@ -6,10 +6,8 @@ import type { App } from 'supertest/types';
 import type { PrismaClient } from '../generated/prisma/client';
 import { RoleCode } from '../generated/prisma/enums';
 import { WhatsAppConfig } from '../src/whatsapp/whatsapp.config';
-import {
-  WhatsAppAdapter,
-  WhatsAppSendError,
-} from '../src/whatsapp/whatsapp.adapter';
+import { WhatsAppAdapter } from '../src/whatsapp/whatsapp.adapter';
+import { ChannelSendError } from '../src/messaging/channel-transport';
 import { OutboundMessagesService } from '../src/messaging/outbound-messages.service';
 import { MessageStatusService } from '../src/messaging/message-status.service';
 import { MessagingOutboxService } from '../src/messaging/messaging-outbox.service';
@@ -376,7 +374,7 @@ export function registerWhatsAppTests(c: Context) {
     it('timeout ambiguo queda UNKNOWN y no vuelve a enviar', async () => {
       const { row } = await inbound();
       const outbound = await enqueue(row.conversationId);
-      send.mockRejectedValue(new WhatsAppSendError('unknown'));
+      send.mockRejectedValue(new ChannelSendError('unknown'));
       await processor().process(outbound.id);
       await processor().process(outbound.id);
       expect(send).toHaveBeenCalledTimes(1);
@@ -408,7 +406,7 @@ export function registerWhatsAppTests(c: Context) {
     it('429 respeta backoff persistente y reintenta; 4xx falla definitivamente', async () => {
       const { row } = await inbound();
       const outbound = await enqueue(row.conversationId);
-      send.mockRejectedValueOnce(new WhatsAppSendError('retry', 30000));
+      send.mockRejectedValueOnce(new ChannelSendError('retry', 30000));
       expect(await processor().process(outbound.id)).toBe('busy');
       await processor().process(outbound.id);
       expect(send).toHaveBeenCalledTimes(1);
@@ -420,7 +418,7 @@ export function registerWhatsAppTests(c: Context) {
         where: { messageId: outbound.id },
         data: { availableAt: new Date(0) },
       });
-      send.mockRejectedValueOnce(new WhatsAppSendError('failed'));
+      send.mockRejectedValueOnce(new ChannelSendError('failed'));
       await processor().process(outbound.id);
       await processor().process(outbound.id);
       expect(send).toHaveBeenCalledTimes(2);
@@ -431,7 +429,7 @@ export function registerWhatsAppTests(c: Context) {
     it('reintentos limitados a cinco POST, incluso con nuevos jobs', async () => {
       const { row } = await inbound();
       const outbound = await enqueue(row.conversationId);
-      send.mockRejectedValue(new WhatsAppSendError('retry'));
+      send.mockRejectedValue(new ChannelSendError('retry'));
       for (let attempt = 0; attempt < 7; attempt++) {
         await db().messagingOutbox.update({
           where: { messageId: outbound.id },

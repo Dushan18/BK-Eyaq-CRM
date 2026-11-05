@@ -1,6 +1,6 @@
-import { readSendDiagnostic } from './whatsapp-send-diagnostic';
+import { readSendDiagnostic } from './send-diagnostic';
 
-describe('WhatsApp safe send diagnostics', () => {
+describe('Provider send diagnostics', () => {
   it('retains only numeric codes and transient flag, never provider text', async () => {
     const result = await readSendDiagnostic(
       new Response(

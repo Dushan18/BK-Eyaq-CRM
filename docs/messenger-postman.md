@@ -35,6 +35,9 @@ MESSENGER_VERIFY_TOKEN=VALOR_ALEATORIO_PRIVADO
 MESSENGER_API_VERSION=v26.0
 ```
 
+Si `.env` ya tiene estas claves, cambiar sus valores en lugar de volver a pegar el bloque:
+con claves repetidas gana la última aparición y la copia de arriba solo confunde.
+
 Usar el token generado en la fila **Sabor Mágico Grill - Restaurant**, no el de otra página.
 Mantener las credenciales de WhatsApp. `META_APP_SECRET` debe corresponder a la app
 `2211731836078710` si se utiliza esa misma app para ambos canales. El verify token lo
@@ -60,16 +63,43 @@ En Messenger → Configuración de la API:
    y `message_deliveries`. El conector v1 no procesa `message_reads` ni postbacks.
 5. No suscribir páginas ajenas al restaurante. Revisar los permisos otorgados a la app.
 
-La publicación de la app no garantiza acceso avanzado a mensajes de cualquier cliente.
-Comprobar `pages_messaging` y el estado de revisión en Meta. Para la prueba inicial usar
-una persona con rol autorizado en la app, tal como indica el panel de Messenger.
+El botón **Probar** del panel envía un evento ficticio (`entry.id` `"0"`, formato `changes`).
+El backend comprueba la firma, responde 200 y lo descarta: no crea conversaciones. Sirve
+para comprobar conectividad y App Secret; la prueba real es la sección 3.
+
+Antes de la prueba real, comprobar en Meta:
+
+- **Usuarios sin rol en la app.** Comprobado el 2026-11-02 con esta app y la página del
+  restaurante: los mensajes de cuentas sin rol llegan al webhook y las respuestas se
+  entregan, sin App Review (Meta lo permite para la página propia). La documentación de
+  Meta se contradice en esto; si un cliente no aparece en el CRM, probar con una cuenta
+  con rol (Administrador, Desarrollador o Tester) para aislar el problema.
+- **Suscripción de la página** (paso 4). El token del backend no puede consultarla
+  (`subscribed_apps` requiere `pages_manage_metadata`): comprobarla en el panel.
+- **"Requerir secreto de la app" desactivado** (Configuración → Avanzada → Seguridad).
+  El backend no envía `appsecret_proof`; con esa opción activa las respuestas fallan.
+- **Enrutamiento de conversaciones.** En la página → Mensajería avanzada → Apps conectadas
+  (o Business Suite → Enrutamiento), ninguna otra app predeterminada ni Business AI debe
+  controlar las conversaciones. Si no, llegan eventos `standby`, que el backend ignora.
+- **Publicación de la app**, solo si con lo anterior un mensaje real no llega a ngrok.
+  La documentación de Meta se contradice: la guía actual de Messenger la exige y hay
+  reportes de que una app sin publicar solo recibe los webhooks de **Probar**. Requiere
+  URL de política de privacidad, URL de eliminación de datos e ícono; no da acceso avanzado.
+
+Si Meta no logra entregar webhooks durante 1 hora (backend o ngrok caídos, errores 5xx),
+desactiva la suscripción de la página: revisar el paso 4 después de cualquier caída.
+Si ngrok cambia de dominio, actualizar la URL de devolución y volver a verificar.
 
 ## 3. Prueba de extremo a extremo
 
-Desde una cuenta autorizada enviar un texto a la **página de Facebook**, no a WhatsApp:
-`Prueba Messenger restaurante 001`.
+Desde un perfil personal de Facebook (no actuando como la página ni desde la bandeja de
+Business Suite) enviar un texto nuevo a la **página de Facebook**, no a WhatsApp:
+`Prueba Messenger restaurante 001`. Cada cuenta distinta crea su propio cliente y
+conversación; si el texto entra en una conversación existente, es la misma cuenta.
 
-En ngrok comprobar `POST /webhooks/messenger` 200. En Postman usar el **JWT del CRM**:
+En ngrok comprobar `POST /webhooks/messenger` 200 con `"messaging"` en el cuerpo y
+`entry.id` igual a `MESSENGER_PAGE_ID`. Si no llega ningún POST, revisar la lista de la
+sección 2: no es un problema del backend. En Postman usar el **JWT del CRM**:
 
 ```http
 GET http://localhost:3000/conversations?channel=FACEBOOK
@@ -77,8 +107,11 @@ Authorization: Bearer JWT_DEL_CRM
 ```
 
 Copiar el `id` de la conversación nueva; no reutilizar el ID de la conversación WhatsApp.
-La persona puede no tener teléfono/email/nombre; su identidad se guarda como PSID por página.
-Puedes editar su nombre desde Clientes sin inventar un teléfono.
+La persona puede no tener teléfono ni email; su identidad se guarda como PSID por página.
+Al recibir sus mensajes, el backend pide a Meta el nombre del remitente y lo guarda en
+`firstName` si el cliente aún no tiene nombre (nunca sobrescribe uno puesto en el CRM).
+Si Meta no lo entrega (cuando la consulta falla, el log muestra
+`MESSENGER_NAME_LOOKUP_FAILED`), puedes ponerlo desde Clientes sin inventar un teléfono.
 
 ```http
 GET http://localhost:3000/conversations/ID_CONVERSACION/messages
@@ -113,12 +146,27 @@ esta versión no implementa excepciones a esa ventana. Véase la
 - Una página configurada por despliegue; texto saliente limitado a 2000 caracteres.
 - Adjuntos entrantes se registran como `OTHER` con aviso; no se descargan ni se envían adjuntos.
 - No hay estado `READ` de Messenger en v1, ni sincronización de historial previo.
+- `sentAt` es la hora en que Meta respondió al envío; `deliveredAt`, la hora del evento de
+  entrega (el `watermark` solo si el evento no trae una hora válida).
+- Meta envía una confirmación por dispositivo, a veces sin `mids`. Su `watermark` marca
+  `DELIVERED` las respuestas `SENT` a ese cliente con `sentAt` hasta esa hora más 2 s (latencia
+  de la respuesta y diferencia de relojes): una respuesta aceptada dentro de ese margen puede
+  confirmarse junto con la anterior, y una cuya respuesta tardó más espera otra confirmación.
+  El `watermark` se evalúa al llegar y no se guarda: si la respuesta aún no estaba en `SENT`,
+  depende de una confirmación posterior. De varias confirmaciones, `deliveredAt` conserva la
+  más temprana. Esa búsqueda no tiene índice; con mucho volumen, añadir uno parcial.
 - Firma `X-Hub-Signature-256` validada contra los bytes originales con `META_APP_SECRET`.
 - Ecos, otras páginas y eventos ajenos no crean clientes ni abren ventanas de respuesta.
 - 429: reintento con demora. Timeout/red/5xx: `UNKNOWN`, sin reenvío automático para evitar duplicados.
-- `FAILED`: revisar el log `MESSENGER_SEND_HTTP_ERROR` (solo códigos numéricos, sin tokens).
+  Meta suele indicar límites con códigos (4, 17, 32, 613, 80006) en un 4xx: hoy quedan `FAILED`.
+- `FAILED`: revisar el log `MESSENGER_SEND_HTTP_ERROR` (solo códigos numéricos, sin tokens):
+  - `metaCode` 200, `metaSubcode` 2018028: el destinatario no tiene rol en la app.
+  - 10 con 2018278 o 2534022: pasaron más de 24 h desde el último mensaje del cliente.
+  - 100 con 2018001: PSID inválido. 551: la persona no está recibiendo mensajes.
+  - 190: token de página inválido o revocado.
 - GET 403: verify token/modo incorrectos; POST 403: firma o App Secret incorrectos.
-- POST 200 pero no aparece texto: confirmar Page ID, suscripciones, permisos, payload y canal consultado.
+- POST 200 pero no aparece texto: si era el botón **Probar**, es lo esperado; si no, confirmar
+  Page ID, suscripciones, permisos, payload y canal consultado.
 
 ## Pruebas locales sin enviar a Meta
 
