@@ -17,12 +17,24 @@ datasource db {
 // Data Base
 
 enum SamantaDraftStatus {
+  SCHEDULED
   GENERATING
   READY
   APPROVED
   REJECTED
   STALE
   FAILED
+}
+
+enum SamantaDraftMode {
+  MANUAL
+  AUTO
+}
+
+enum AssistantPauseReason {
+  MANUAL
+  OPERATOR_REPLIED
+  SAMANTA_HANDOFF
 }
 
 model SamantaDraft {
@@ -35,6 +47,7 @@ model SamantaDraft {
   reviewedById        String?
   editedById          String?
   status              SamantaDraftStatus @default(GENERATING)
+  mode                SamantaDraftMode @default(MANUAL)
   revision            Int @default(1)
   model               String @db.VarChar(80)
   promptVersion       String @db.VarChar(80)
@@ -47,7 +60,9 @@ model SamantaDraft {
   inputTokens         Int?
   outputTokens        Int?
   errorCode           String? @db.VarChar(80)
-  generationExpiresAt DateTime @db.Timestamptz(3)
+  availableAt         DateTime? @db.Timestamptz(3)
+  generationStartedAt DateTime? @db.Timestamptz(3)
+  generationExpiresAt DateTime? @db.Timestamptz(3)
   expiresAt           DateTime @db.Timestamptz(3)
   reviewedAt          DateTime? @db.Timestamptz(3)
   outboundMessageId   String? @unique
@@ -64,6 +79,9 @@ model SamantaDraft {
   @@index([conversationId, createdAt, id])
   @@index([createdAt])
   @@index([status, generationExpiresAt])
+  @@index([mode, status, availableAt])
+  @@index([generationStartedAt])
+  @@index([conversationId, generationStartedAt])
   @@map("samanta_drafts")
 }
 
@@ -106,6 +124,8 @@ model Conversation {
   channel                ContactChannel
   externalConversationId String?        @db.VarChar(255)
   isAssistantPaused      Boolean        @default(false)
+  assistantPauseReason   AssistantPauseReason?
+  assistantPausedAt      DateTime?      @db.Timestamptz(3)
   assignedUserId         String?
   lastMessageAt          DateTime?      @db.Timestamptz(3)
   lastSequence           Int            @default(0)

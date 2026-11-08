@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma/client';
@@ -22,6 +23,7 @@ import {
   type ChannelAddress,
   type ChannelTransport,
 } from './channel-transport';
+import { AssistantBridge } from './assistant-bridge';
 
 // Meta's customer service window, shared by WhatsApp and Messenger.
 export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -33,13 +35,16 @@ export class OutboundMessagesService {
   constructor(
     private readonly transactions: MessagingTransactionService,
     private readonly transports: ChannelTransports,
+    @Optional() private readonly assistant?: AssistantBridge,
   ) {}
+  // `operatorReply`: a person typed the message, so automatic Samanta steps aside.
   async queueOutboundMessage(
     conversationId: string,
     authorUserId: string,
     key: string | undefined,
     dto: OutboundMessageDto,
     transaction?: Prisma.TransactionClient,
+    options: { operatorReply?: boolean } = {},
   ) {
     if (!key || !/^[a-zA-Z0-9_-]{16,80}$/.test(key))
       throw new BadRequestException(
@@ -66,51 +71,28 @@ export class OutboundMessagesService {
           );
         return existing;
       }
-      const conversation = await tx.conversation.findUnique({
-        where: { id: conversationId },
-        include: {
-          customer: {
-            select: {
-              normalizedPhone: true,
-              providerAccountId: true,
-              externalContactId: true,
-              whatsappUserId: true,
-            },
-          },
-        },
-      });
-      if (!conversation)
-        throw new NotFoundException('Conversación no encontrada');
-      const transport = this.transports.find(conversation.channel);
-      if (!transport)
-        throw new BadRequestException(
-          'Conversación sin destinatario habilitado',
-        );
-      transport.assertEnabled();
-      if (dto.content.length > transport.maxTextLength)
-        throw new BadRequestException(
-          `${transport.label} admite hasta ${transport.maxTextLength} caracteres por respuesta`,
-        );
-      if (exceedsTextLimit(transport, dto.content))
-        throw new BadRequestException(
-          `${transport.label} admite hasta ${transport.maxTextBytes} bytes por respuesta; las tildes y los emojis ocupan más de uno`,
-        );
-      const candidates = transport.recipientOf(conversation.customer);
-      if (!candidates || !hasAddress(candidates))
-        throw new BadRequestException(
-          'Conversación sin destinatario habilitado',
-        );
-      const recipient = await this.openAddress(
+      const { conversation, transport, recipient } = await this.replyTarget(
         tx,
         conversationId,
-        transport,
-        candidates,
+        dto.content,
       );
-      if (!recipient)
-        throw new ConflictException(transport.windowClosedMessage);
+      const takeOver =
+        options.operatorReply &&
+        this.assistant?.handler?.autoReplies &&
+        !conversation.isAssistantPaused;
       const current = await tx.conversation.update({
         where: { id: conversationId },
-        data: { lastSequence: { increment: 1 }, lastMessageAt: new Date() },
+        data: {
+          lastSequence: { increment: 1 },
+          lastMessageAt: new Date(),
+          ...(takeOver
+            ? {
+                isAssistantPaused: true,
+                assistantPauseReason: 'OPERATOR_REPLIED' as const,
+                assistantPausedAt: new Date(),
+              }
+            : {}),
+        },
       });
       return tx.message.create({
         data: {
@@ -134,6 +116,63 @@ export class OutboundMessagesService {
     return transaction
       ? enqueue(transaction)
       : this.transactions.run(enqueue, true);
+  }
+  // Same checks as sending, without sending: lets Samanta skip a paid generation
+  // that could never be delivered (channel off, no recipient or window closed).
+  // Returns how many characters a reply may have; channels limited in bytes get a
+  // margin because accented letters and emojis take more than one byte.
+  async assertCanReply(tx: Prisma.TransactionClient, conversationId: string) {
+    const { transport } = await this.replyTarget(tx, conversationId);
+    return transport.maxTextBytes === undefined
+      ? transport.maxTextLength
+      : Math.min(
+          transport.maxTextLength,
+          Math.floor(transport.maxTextBytes * 0.8),
+        );
+  }
+  private async replyTarget(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+    content?: string,
+  ) {
+    const conversation = await tx.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        customer: {
+          select: {
+            normalizedPhone: true,
+            providerAccountId: true,
+            externalContactId: true,
+            whatsappUserId: true,
+          },
+        },
+      },
+    });
+    if (!conversation)
+      throw new NotFoundException('Conversación no encontrada');
+    const transport = this.transports.find(conversation.channel);
+    if (!transport)
+      throw new BadRequestException('Conversación sin destinatario habilitado');
+    transport.assertEnabled();
+    if (content !== undefined && content.length > transport.maxTextLength)
+      throw new BadRequestException(
+        `${transport.label} admite hasta ${transport.maxTextLength} caracteres por respuesta`,
+      );
+    if (content !== undefined && exceedsTextLimit(transport, content))
+      throw new BadRequestException(
+        `${transport.label} admite hasta ${transport.maxTextBytes} bytes por respuesta; las tildes y los emojis ocupan más de uno`,
+      );
+    const candidates = transport.recipientOf(conversation.customer);
+    if (!candidates || !hasAddress(candidates))
+      throw new BadRequestException('Conversación sin destinatario habilitado');
+    const recipient = await this.openAddress(
+      tx,
+      conversationId,
+      transport,
+      candidates,
+    );
+    if (!recipient) throw new ConflictException(transport.windowClosedMessage);
+    return { conversation, transport, recipient };
   }
   // The first candidate, phone first, with an inbound message inside the window.
   private async openAddress(

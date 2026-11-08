@@ -1396,7 +1396,7 @@ export function customerDisplayName(customer: CustomerSummary, channel: ContactC
 }
 ```
 
-**Samanta con borradores.** Samanta v1 no responde sola: una persona pide un borrador, lo revisa y lo aprueba ([Samanta](README.md#samanta-borradores-con-revisión-humana) y [04](04-bandeja-samanta.md#generar-un-borrador-con-samanta)). Flujo en el chat:
+**Samanta con borradores.** Una persona pide un borrador, lo revisa y lo aprueba ([Samanta](README.md#samanta-borradores-con-revisión-humana) y [04](04-bandeja-samanta.md#generar-un-borrador-con-samanta)). Si el servidor tiene el modo automático, Samanta además responde sola, y sus mensajes y borradores `AUTO` llegan por las mismas rutas ([04 › Samanta automática](04-bandeja-samanta.md#samanta-automática)). Flujo en el chat:
 1. **Cuándo ofrecer «Generar».** Solo si la conversación es de `WHATSAPP`, no está en pausa, el último mensaje cargado es un `INBOUND` de texto y el usuario tiene `draft.review`. Un OPERATOR, además, solo si la conversación está libre o es suya.
 2. **Generar.** `assistantDraftsApi.generate(id, ultimoMensaje.id, clave)`. Genera la clave al hacer clic y reutilízala solo para reintentar esa misma generación, por ejemplo tras un 504: el BFF corta a los 65 s y bk-crm devuelve el mismo borrador sin generar otro.
 3. **Esperar.** Si el borrador llega en `GENERATING`, consulta su detalle cada 2–3 s hasta que cambie.
@@ -1490,7 +1490,7 @@ Ajustes de la Bandeja que dependen de Samanta:
 - **Modo de la conversación.** La píldora «Samanta» y el aviso «Samanta está respondiendo» dan a entender que Samanta contesta sola. En v1, `isAssistantPaused` solo impide generar y usar borradores. Ajusta los textos con producto.
 - **«Quien escribe toma el control».** Al enviar, el Composer pausa a Samanta (`plan.pause`). Con la conversación en pausa, generar responde 409 `Samanta está pausada en esta conversación` y los borradores quedan `STALE`. Decide con producto si enviar debe seguir pausando, o muestra «Reanudar» junto a «Generar».
 - **Samanta apagada.** Si `SAMANTA_ENABLED` no es `true`, generar, editar y aprobar responden 503 `Samanta está desactivada`. Como no hay endpoint de capacidades, tras el primer 503 muestra el aviso y deshabilita el botón hasta recargar.
-- **Otros errores al generar:** 400 `Samanta v1 admite WhatsApp`; 409 `Selecciona el último mensaje entrante de texto (máximo 4096 caracteres)`; 429 `Límite de generación de Samanta alcanzado` (100 al día en total y 2 a la vez, por defecto); 409 `Ya hay un borrador en generación`.
+- **Otros errores al generar:** los del envío cuando la ventana de 24 h está cerrada, el canal apagado o no hay destinatario (409, 503 o 400, sin llamar a la IA); 409 `Selecciona el último mensaje entrante de texto (máximo 4096 caracteres)`; 429 `Límite de generación de Samanta alcanzado` (100 al día en total y 2 a la vez, por defecto); 409 `Ya hay un borrador en generación`.
 
 **Panel derecho.**
 - El texto «Aún no hay solicitud. Samanta la crea cuando el cliente confirma fecha, hora y personas.» no se cumple: Samanta no crea solicitudes. Cámbialo y, para ADMIN y OPERATOR, ofrece «Nueva solicitud» con `requestsApi.create({ customerId, sourceChannel: conversation.channel, … })` ([Solicitudes](#solicitudes)).
@@ -1716,7 +1716,7 @@ export function storeReservationNote(queryClient: QueryClient, note: Reservation
 
 - **Responsable.** `approvalResponsibleId` debe ser un usuario activo con rol OWNER. Si se desactiva o pierde OWNER, cualquier guardado de Ajustes responde 400 hasta elegir otro. `OwnerValidationCard` ya lo avisa (`staleSelected`).
 - **Datos sin uso.** `responseTimeoutMinutes` y `approvalResponsibleId` se guardan, pero ningún proceso del backend los usa todavía.
-- **Tarjetas «Canales donde atiende» y «Reglas».** No existen en el backend: son estáticas y lo dicen. Con Samanta v1, la nota correcta es que Samanta prepara borradores solo en WhatsApp y solo si el servidor la tiene habilitada (`SAMANTA_ENABLED`, que el frontend no puede consultar).
+- **Tarjetas «Canales donde atiende» y «Reglas».** No hay rutas para editarlas: los canales del modo automático se configuran en el servidor (`SAMANTA_AUTO_CHANNELS`, por defecto WhatsApp, Messenger e Instagram) junto con `SAMANTA_ENABLED` y `SAMANTA_AUTO_ENABLED`, y el frontend no puede consultarlos. Muéstralas como informativas.
 - **Falta en el backend:** el endpoint de capacidades, las reglas de Samanta y el WhatsApp personal del dueño.
 
 ### Ajustes › Servicios

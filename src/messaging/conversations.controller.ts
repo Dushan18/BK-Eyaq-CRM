@@ -44,7 +44,16 @@ export class ConversationsController {
     @Body() dto: OutboundMessageDto,
     @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.outbound.queueOutboundMessage(id, actor.id, key, dto);
+    return this.outbound.queueOutboundMessage(
+      id,
+      actor.id,
+      key,
+      dto,
+      undefined,
+      {
+        operatorReply: true,
+      },
+    );
   }
   @Get()
   @Roles(RoleCode.ADMIN, RoleCode.OWNER, RoleCode.OPERATOR)

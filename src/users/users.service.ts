@@ -9,6 +9,7 @@ import * as bcrypt from 'bcrypt';
 import type { Prisma } from '../../generated/prisma/client';
 import { RoleCode } from '../../generated/prisma/enums';
 import { PASSWORD_SALT_ROUNDS } from '../common/constants/security.constants';
+import { SAMANTA_USER_ID } from '../common/constants/system-users.constants';
 import { PrismaService } from '../database/prisma.service';
 import { CreateUserDto } from '../dto/create-user.dto';
 import { UpdateUserDto } from '../dto/update-user.dto';
@@ -99,6 +100,7 @@ export class UsersService {
 
   async findAll() {
     const users = await this.prisma.user.findMany({
+      where: { id: { not: SAMANTA_USER_ID } },
       select: publicUserSelect,
       orderBy: {
         createdAt: 'desc',
@@ -109,6 +111,7 @@ export class UsersService {
   }
 
   async findOne(id: string) {
+    this.assertNotSystemUser(id);
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: publicUserSelect,
@@ -122,6 +125,7 @@ export class UsersService {
   }
 
   async update(id: string, dto: UpdateUserDto) {
+    this.assertNotSystemUser(id);
     const existingUser = await this.prisma.user.findUnique({
       where: { id },
       select: {
@@ -170,6 +174,7 @@ export class UsersService {
   }
 
   async updateStatus(id: string, dto: UpdateUserStatusDto) {
+    this.assertNotSystemUser(id);
     try {
       const user = await this.prisma.$transaction(
         async (tx) => {
@@ -256,6 +261,7 @@ export class UsersService {
   }
 
   async updateRoles(id: string, dto: UpdateUserRolesDto) {
+    this.assertNotSystemUser(id);
     const roleRecords = await this.getRoleRecords(dto.roles);
 
     try {
@@ -350,6 +356,12 @@ export class UsersService {
         id: true,
       },
     });
+  }
+
+  // Samanta's system user must stay inactive and without roles.
+  private assertNotSystemUser(id: string) {
+    if (id === SAMANTA_USER_ID)
+      throw new NotFoundException('Usuario no encontrado');
   }
 
   private async ensureEmailAvailable(

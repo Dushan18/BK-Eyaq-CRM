@@ -21,12 +21,20 @@ import {
   SamantaProvider,
   SamantaProviderError,
   type DraftOutput,
+  type TokenUsage,
 } from './samanta.provider';
 import type {
   EditDraftDto,
   GenerateDraftDto,
   ReviewDraftDto,
 } from './samanta.dto';
+import {
+  activeGeneration,
+  latestActivity,
+  utcDayStart,
+} from './samanta-drafts';
+
+type LockedConversation = Conversation & { latestActivity: number };
 
 @Injectable()
 export class SamantaService {
@@ -38,11 +46,14 @@ export class SamantaService {
     private readonly outbound: OutboundMessagesService,
   ) {}
 
-  private async conversation(tx: Prisma.TransactionClient, id: string) {
+  private async conversation(
+    tx: Prisma.TransactionClient,
+    id: string,
+  ): Promise<LockedConversation> {
     await tx.$queryRaw`SELECT id FROM conversations WHERE id = ${id} FOR UPDATE`;
     const row = await tx.conversation.findUnique({ where: { id } });
     if (!row) throw new NotFoundException('Conversación no encontrada');
-    return row;
+    return { ...row, latestActivity: await latestActivity(tx, id) };
   }
   private operator(conversation: Conversation, actor: AuthenticatedUser) {
     if (!actor.roles.includes('ADMIN') && !actor.roles.includes('OPERATOR'))
@@ -54,9 +65,9 @@ export class SamantaService {
     )
       throw new ForbiddenException('Conversación asignada a otro operador');
   }
-  private stale(draft: SamantaDraft, conversation: Conversation) {
+  private stale(draft: SamantaDraft, conversation: LockedConversation) {
     return (
-      draft.baselineSequence !== conversation.lastSequence ||
+      conversation.latestActivity > draft.baselineSequence ||
       conversation.isAssistantPaused ||
       draft.expiresAt <= new Date()
     );
@@ -64,20 +75,20 @@ export class SamantaService {
   private async refresh(
     tx: Prisma.TransactionClient,
     draft: SamantaDraft,
-    conversation: Conversation,
+    conversation: LockedConversation,
   ) {
     if (
       draft.status === 'GENERATING' &&
+      draft.generationExpiresAt &&
       draft.generationExpiresAt <= new Date()
     )
       return tx.samantaDraft.update({
         where: { id: draft.id },
         data: { status: 'FAILED', errorCode: 'AI_GENERATION_EXPIRED' },
       });
-    if (
-      ['READY', 'GENERATING'].includes(draft.status) &&
-      this.stale(draft, conversation)
-    )
+    // A generation in progress keeps its slot until it ends; the end decides if
+    // the result is stale. Releasing it earlier let more calls than the limit run.
+    if (draft.status === 'READY' && this.stale(draft, conversation))
       return tx.samantaDraft.update({
         where: { id: draft.id },
         data: { status: 'STALE' },
@@ -154,33 +165,31 @@ export class SamantaService {
         throw new ConflictException(
           'Samanta está pausada en esta conversación',
         );
-      if (conversation.channel !== 'WHATSAPP')
-        throw new BadRequestException('Samanta v1 admite WhatsApp');
+      // Reactions, stickers or audio after the text do not count as newer.
       const source = await tx.message.findFirst({
         where: {
           id: dto.sourceMessageId,
           conversationId: id,
-          sequence: conversation.lastSequence,
           direction: 'INBOUND',
           type: 'TEXT',
         },
-        select: { content: true },
+        select: { content: true, sequence: true },
       });
-      if (!source?.content?.trim() || source.content.length > 4096)
+      if (
+        !source?.content?.trim() ||
+        source.content.length > 4096 ||
+        conversation.latestActivity > source.sequence
+      )
         throw new ConflictException(
           'Selecciona el último mensaje entrante de texto (máximo 4096 caracteres)',
         );
+      // Never pay for a draft that could not be sent: channel off or window closed.
+      const maxCharacters = await this.outbound.assertCanReply(tx, id);
       const now = new Date();
-      const start = new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-      );
       const count = await tx.samantaDraft.count({
-        where: { createdAt: { gte: start } },
+        where: { generationStartedAt: { gte: utcDayStart(now) } },
       });
-      const active = {
-        status: 'GENERATING' as const,
-        generationExpiresAt: { gt: now },
-      };
+      const active = activeGeneration(now);
       if (
         count >= this.config.dailyLimit ||
         (await tx.samantaDraft.count({ where: active })) >=
@@ -196,17 +205,18 @@ export class SamantaService {
         })
       )
         throw new ConflictException('Ya hay un borrador en generación');
-      const context = await this.context.build(tx, id);
+      const context = await this.context.build(tx, id, maxCharacters);
       const draft = await tx.samantaDraft.create({
         data: {
           conversationId: id,
           sourceMessageId: dto.sourceMessageId,
-          baselineSequence: conversation.lastSequence,
+          baselineSequence: source.sequence,
           idempotencyKey: key,
           createdById: actor.id,
           model: this.config.model,
           promptVersion: PROMPT_VERSION,
           knowledgeHash: context.hash,
+          generationStartedAt: now,
           generationExpiresAt: new Date(
             now.getTime() + this.config.timeoutMs + 10000,
           ),
@@ -218,11 +228,13 @@ export class SamantaService {
     if (!claim.context) return claim.draft;
     let output: DraftOutput | undefined;
     let errorCode: string | undefined;
+    let usage: TokenUsage | undefined;
     try {
-      output = await this.provider.generate(claim.context);
+      output = await this.provider.generate(claim.context, 'draft');
     } catch (error) {
       errorCode =
         error instanceof SamantaProviderError ? error.code : 'AI_UNAVAILABLE';
+      usage = error instanceof SamantaProviderError ? error.usage : undefined;
     }
     // The external call is deliberately OUTSIDE the retried DB transaction.
     return this.transactions.run(async (tx) => {
@@ -232,22 +244,28 @@ export class SamantaService {
         await this.find(tx, id, claim.draft.id),
         conversation,
       );
+      // A discarded or failed draft may still have consumed provider tokens.
+      const spent = output ?? usage;
+      const tokens = spent
+        ? { inputTokens: spent.inputTokens, outputTokens: spent.outputTokens }
+        : {};
       if (current.status !== 'GENERATING') {
-        // A discarded draft may still have consumed provider tokens.
-        if (output && ['STALE', 'FAILED'].includes(current.status))
+        if (spent && ['STALE', 'FAILED'].includes(current.status))
           return tx.samantaDraft.update({
             where: { id: current.id },
-            data: {
-              inputTokens: output.inputTokens,
-              outputTokens: output.outputTokens,
-            },
+            data: tokens,
           });
         return current;
       }
       if (!output)
         return tx.samantaDraft.update({
           where: { id: current.id },
-          data: { status: 'FAILED', errorCode },
+          data: { status: 'FAILED', errorCode, ...tokens },
+        });
+      if (this.stale(current, conversation))
+        return tx.samantaDraft.update({
+          where: { id: current.id },
+          data: { status: 'STALE', ...tokens },
         });
       let validKnowledge = false;
       try {

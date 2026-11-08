@@ -799,7 +799,9 @@ export function registerWhatsAppTests(c: Context) {
           for (const phone of [first.phone, second.phone]) {
             expect(
               send.mock.calls.filter(
-                (call: unknown[]) => call[0] === `+${phone}`,
+                (call: unknown[]) =>
+                  (call[0] as { recipientPhone?: string | null })
+                    .recipientPhone === `+${phone}`,
               ),
             ).toHaveLength(1);
           }

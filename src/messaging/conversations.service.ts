@@ -138,7 +138,11 @@ export class ConversationsService {
       await this.requireConversation(tx, id);
       const row = await tx.conversation.update({
         where: { id },
-        data: { isAssistantPaused: dto.paused },
+        data: {
+          isAssistantPaused: dto.paused,
+          assistantPauseReason: dto.paused ? 'MANUAL' : null,
+          assistantPausedAt: dto.paused ? new Date() : null,
+        },
         select: conversationSelect,
       });
       // TODO: ASSISTANT_PAUSED / ASSISTANT_RESUMED audit.

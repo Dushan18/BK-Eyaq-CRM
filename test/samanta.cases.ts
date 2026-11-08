@@ -8,10 +8,14 @@ import { RoleCode } from '../generated/prisma/enums';
 import { SamantaConfig } from '../src/samanta/samanta.config';
 import {
   type DraftOutput,
+  type GenerationMode,
   SamantaProviderError,
 } from '../src/samanta/samanta.provider';
+import { SamantaAutoService } from '../src/samanta/samanta-auto.service';
 import { MessagesService } from '../src/messaging/messages.service';
+import { MessageProcessorService } from '../src/messaging/message-processor.service';
 import { OutboundMessagesService } from '../src/messaging/outbound-messages.service';
+import { SAMANTA_USER_ID } from '../src/common/constants/system-users.constants';
 
 const output: DraftOutput = {
   content: '¿Para qué fecha deseas reservar?',
@@ -21,17 +25,23 @@ const output: DraftOutput = {
   inputTokens: 100,
   outputTokens: 20,
 };
-export const samantaTestConfig = new SamantaConfig(
-  new ConfigService({
-    SAMANTA_ENABLED: 'true',
-    OPENAI_API_KEY: 'fake-never-used',
-  }),
-);
+// ConfigService gives process.env priority over the values passed here, and the
+// integration suite loads the developer's .env: read only these values.
+const samantaTestEnv: Record<string, string> = {
+  SAMANTA_ENABLED: 'true',
+  OPENAI_API_KEY: 'fake-never-used',
+};
+export const samantaTestConfig = new SamantaConfig({
+  get: (key: string) => samantaTestEnv[key],
+} as unknown as ConfigService);
 export const samantaTestProvider = {
-  generate: jest.fn((context: string): Promise<DraftOutput> => {
-    void context;
-    return Promise.resolve(output);
-  }),
+  generate: jest.fn(
+    (context: string, mode?: GenerationMode): Promise<DraftOutput> => {
+      void context;
+      void mode;
+      return Promise.resolve(output);
+    },
+  ),
 };
 interface Context {
   app: () => INestApplication;
@@ -253,17 +263,85 @@ export function registerSamantaTests(c: Context) {
       });
       await approve(row, draft).expect(409);
     });
-    it('respeta la ventana WhatsApp y no aprueba si el encolado falla', async () => {
+    it('con la ventana WhatsApp cerrada no genera ni gasta OpenAI', async () => {
       const row = await incoming();
       await db().message.update({
         where: { id: row.sourceMessageId },
         data: { occurredAt: new Date(Date.now() - 25 * 3600000) },
       });
+      const res = await generate(row).expect(409);
+      expect((res.body as { message: string }).message).toMatch(/ventana/i);
+      expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+      expect(
+        await db().samantaDraft.count({
+          where: { conversationId: row.conversationId },
+        }),
+      ).toBe(0);
+    });
+    it('no aprueba si la ventana se cerró después de generar', async () => {
+      const row = await incoming();
       const draft = await ready(row);
+      await db().message.update({
+        where: { id: row.sourceMessageId },
+        data: { occurredAt: new Date(Date.now() - 25 * 3600000) },
+      });
       await approve(row, draft).expect(409);
       expect(
         await db().samantaDraft.findUnique({ where: { id: draft.id } }),
       ).toMatchObject({ status: 'READY', outboundMessageId: null });
+    });
+    it('un sticker o reacción no invalida el borrador ni impide generar', async () => {
+      const row = await incoming();
+      const draft = await ready(row);
+      await c
+        .app()
+        .get(MessagesService)
+        .ingestInboundMessage({
+          channel: 'WHATSAPP',
+          externalMessageId: `wamid.${randomUUID()}`,
+          providerAccountId: '123',
+          contact: { phone: row.phone },
+          type: 'OTHER',
+          content: '[Mensaje de WhatsApp no compatible todavía]',
+          occurredAt: new Date().toISOString(),
+        });
+      await generate(row).expect(201);
+      expect((await approve(row, draft).expect(202)).body).toMatchObject({
+        status: 'APPROVED',
+      });
+    });
+    it('consultar la lista no libera la plaza de una generación en curso', async () => {
+      const row = await incoming();
+      const other = await incoming();
+      let release!: (value: DraftOutput) => void;
+      let started!: () => void;
+      const called = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      samantaTestProvider.generate.mockImplementationOnce(() => {
+        started();
+        return new Promise<DraftOutput>((resolve) => {
+          release = resolve;
+        });
+      });
+      jest.replaceProperty(samantaTestConfig, 'concurrentLimit', 1);
+      const first = generate(row).then((result) => result);
+      await called;
+      try {
+        await incoming(row.phone);
+        const list = await request(c.server())
+          .get(base(row))
+          .set('Authorization', c.auth(RoleCode.OWNER))
+          .expect(200);
+        expect((list.body as { data: SamantaDraft[] }).data[0].status).toBe(
+          'GENERATING',
+        );
+        await generate(other).expect(429);
+      } finally {
+        release(output);
+      }
+      expect(((await first).body as SamantaDraft).status).toBe('STALE');
+      expect(samantaTestProvider.generate).toHaveBeenCalledTimes(1);
     });
     it('revierte mensaje/outbox si falla la operación de aprobación', async () => {
       const row = await incoming();
@@ -330,7 +408,7 @@ export function registerSamantaTests(c: Context) {
         Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
       );
       const count = await db().samantaDraft.count({
-        where: { createdAt: { gte: start } },
+        where: { generationStartedAt: { gte: start } },
       });
       jest.replaceProperty(samantaTestConfig, 'dailyLimit', count + 1);
       const results = await Promise.all(rows.map((row) => generate(row)));
@@ -426,6 +504,372 @@ export function registerSamantaTests(c: Context) {
       await generate(row).expect(503);
       await approve(row, draft).expect(503);
       expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+    });
+    it('el usuario de sistema de Samanta no aparece ni puede iniciar sesión', async () => {
+      const users = await request(c.server())
+        .get('/users')
+        .set('Authorization', c.auth())
+        .expect(200);
+      expect(
+        (users.body as { id: string }[]).some(
+          (user) => user.id === SAMANTA_USER_ID,
+        ),
+      ).toBe(false);
+      await request(c.server())
+        .patch(`/users/${SAMANTA_USER_ID}/status`)
+        .set('Authorization', c.auth())
+        .send({ isActive: true })
+        .expect(404);
+      await request(c.server())
+        .post('/auth/login')
+        .send({
+          email: 'samanta@sistema.invalid',
+          password: 'CualquierClave123!',
+        })
+        .expect(401);
+    });
+    it('la pausa manual guarda su motivo', async () => {
+      const row = await incoming();
+      const path = `/conversations/${row.conversationId}/assistant`;
+      expect(
+        (
+          await request(c.server())
+            .patch(path)
+            .set('Authorization', c.auth())
+            .send({ paused: true })
+            .expect(200)
+        ).body,
+      ).toMatchObject({
+        isAssistantPaused: true,
+        assistantPauseReason: 'MANUAL',
+      });
+      expect(
+        (
+          await request(c.server())
+            .patch(path)
+            .set('Authorization', c.auth())
+            .send({ paused: false })
+            .expect(200)
+        ).body,
+      ).toMatchObject({
+        isAssistantPaused: false,
+        assistantPauseReason: null,
+        assistantPausedAt: null,
+      });
+    });
+
+    describe('modo automático', () => {
+      const reply: DraftOutput = {
+        ...output,
+        content: 'Abrimos de martes a domingo desde las 12:00.',
+        intent: 'GENERAL',
+        requiresHuman: false,
+        missingFields: [],
+      };
+      const auto = () => c.app().get(SamantaAutoService);
+      const say = async (
+        phone = `+519${randomInt(10000000, 99999999)}`,
+        content = '¿A qué hora abren?',
+        extra: { type?: 'TEXT' | 'OTHER'; occurredAt?: string } = {},
+      ) => {
+        const result = await c
+          .app()
+          .get(MessagesService)
+          .ingestInboundMessage({
+            channel: 'WHATSAPP',
+            externalMessageId: `wamid.${randomUUID()}`,
+            providerAccountId: '123',
+            contact: { phone },
+            type: extra.type ?? 'TEXT',
+            content,
+            occurredAt: extra.occurredAt ?? new Date().toISOString(),
+          });
+        await expect(
+          c.app().get(MessageProcessorService).process(result.message.id),
+        ).resolves.toBe('processed');
+        return {
+          messageId: result.message.id,
+          conversationId: result.message.conversationId,
+          phone,
+        };
+      };
+      type Said = Awaited<ReturnType<typeof say>>;
+      const drafts = (row: Said) =>
+        db().samantaDraft.findMany({
+          where: { conversationId: row.conversationId, mode: 'AUTO' },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        });
+      // Skips the wait that groups consecutive customer messages.
+      const due = async (row: Said) => {
+        await db().samantaDraft.updateMany({
+          where: { conversationId: row.conversationId, status: 'SCHEDULED' },
+          data: { availableAt: new Date(0) },
+        });
+        await auto().runOnce();
+      };
+      const sent = (row: Said) =>
+        db().message.findMany({
+          where: { conversationId: row.conversationId, direction: 'OUTBOUND' },
+        });
+      const conversation = (row: Said) =>
+        db().conversation.findUniqueOrThrow({
+          where: { id: row.conversationId },
+        });
+      beforeEach(() => {
+        jest.replaceProperty(samantaTestConfig, 'autoEnabled', true);
+        jest.replaceProperty(samantaTestConfig, 'autoSend', true);
+        samantaTestProvider.generate.mockResolvedValue(reply);
+      });
+      afterEach(async () => {
+        // A reply left scheduled must not leak into the next test.
+        await db().samantaDraft.updateMany({
+          where: { status: 'SCHEDULED' },
+          data: { status: 'STALE' },
+        });
+      });
+
+      it('responde sola al último texto, firmada por Samanta, y nunca dos veces', async () => {
+        const row = await say();
+        const [scheduled] = await drafts(row);
+        expect(scheduled).toMatchObject({
+          mode: 'AUTO',
+          status: 'SCHEDULED',
+          sourceMessageId: row.messageId,
+          createdById: SAMANTA_USER_ID,
+          generationStartedAt: null,
+        });
+        expect(scheduled.availableAt!.getTime()).toBeGreaterThan(Date.now());
+        await auto().runOnce();
+        expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+        await due(row);
+        expect(samantaTestProvider.generate).toHaveBeenCalledTimes(1);
+        const [context, mode] = samantaTestProvider.generate.mock.calls[0];
+        expect(mode).toBe('auto');
+        const parsed = JSON.parse(context) as {
+          now: { local: string; weekday: string; timeZone: string };
+          reply: { channel: string; maxCharacters: number };
+          history: { content: string; at: string }[];
+        };
+        expect(parsed.now).toMatchObject({ timeZone: 'America/Lima' });
+        expect(parsed.now.local).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+        expect(parsed.reply).toEqual({
+          channel: 'WHATSAPP',
+          maxCharacters: 4096,
+        });
+        expect(parsed.history.at(-1)).toMatchObject({
+          content: '¿A qué hora abren?',
+        });
+        expect(context).not.toContain(row.phone);
+        const [answered] = await drafts(row);
+        expect(answered).toMatchObject({
+          status: 'APPROVED',
+          reviewedById: SAMANTA_USER_ID,
+          content: reply.content,
+          inputTokens: 100,
+        });
+        const messages = await sent(row);
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+          id: answered.outboundMessageId,
+          status: 'QUEUED',
+          authorUserId: SAMANTA_USER_ID,
+          content: reply.content,
+        });
+        await auto().runOnce();
+        await expect(
+          c.app().get(MessageProcessorService).process(row.messageId),
+        ).resolves.toBe('terminal');
+        expect(await sent(row)).toHaveLength(1);
+        expect(await drafts(row)).toHaveLength(1);
+        expect(await conversation(row)).toMatchObject({
+          isAssistantPaused: false,
+        });
+      });
+      it('agrupa mensajes seguidos en una sola respuesta', async () => {
+        const row = await say(undefined, 'Hola');
+        const second = await say(row.phone, 'Somos 4 para el sábado');
+        const [first, last] = await drafts(row);
+        expect(first.status).toBe('STALE');
+        expect(last).toMatchObject({
+          status: 'SCHEDULED',
+          sourceMessageId: second.messageId,
+        });
+        await due(row);
+        expect(samantaTestProvider.generate).toHaveBeenCalledTimes(1);
+        const [context] = samantaTestProvider.generate.mock.calls[0];
+        expect(context).toContain('Hola');
+        expect(context).toContain('Somos 4 para el sábado');
+        expect(await sent(row)).toHaveLength(1);
+      });
+      it('transfiere a una persona cuando el caso lo requiere', async () => {
+        samantaTestProvider.generate.mockResolvedValueOnce({
+          ...reply,
+          content: 'Te comunico con una persona del equipo.',
+          intent: 'HUMAN',
+          requiresHuman: true,
+        });
+        const row = await say(undefined, 'Quiero hablar con alguien');
+        await due(row);
+        expect(await sent(row)).toHaveLength(1);
+        expect(await conversation(row)).toMatchObject({
+          isAssistantPaused: true,
+          assistantPauseReason: 'SAMANTA_HANDOFF',
+        });
+        await say(row.phone, '¿Hola?');
+        expect(await drafts(row)).toHaveLength(1);
+      });
+      it('un operador que escribe pausa a Samanta y descarta la respuesta pendiente', async () => {
+        const row = await say();
+        await request(c.server())
+          .post(`/conversations/${row.conversationId}/messages`)
+          .set('Authorization', c.auth(RoleCode.OPERATOR))
+          .set('Idempotency-Key', randomUUID())
+          .send({ type: 'TEXT', content: 'Hola, te atiende Ana.' })
+          .expect(202);
+        expect(await conversation(row)).toMatchObject({
+          isAssistantPaused: true,
+          assistantPauseReason: 'OPERATOR_REPLIED',
+        });
+        await due(row);
+        expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+        expect((await drafts(row))[0].status).toBe('STALE');
+      });
+      it('sin modo automático, escribir no pausa a Samanta', async () => {
+        jest.replaceProperty(samantaTestConfig, 'autoEnabled', false);
+        const row = await say();
+        expect(await drafts(row)).toHaveLength(0);
+        await request(c.server())
+          .post(`/conversations/${row.conversationId}/messages`)
+          .set('Authorization', c.auth(RoleCode.OPERATOR))
+          .set('Idempotency-Key', randomUUID())
+          .send({ type: 'TEXT', content: 'Hola' })
+          .expect(202);
+        expect(await conversation(row)).toMatchObject({
+          isAssistantPaused: false,
+        });
+      });
+      it('en modo sombra deja la respuesta como borrador para revisión', async () => {
+        jest.replaceProperty(samantaTestConfig, 'autoSend', false);
+        const row = await say();
+        await due(row);
+        const [draft] = await drafts(row);
+        expect(draft).toMatchObject({
+          status: 'READY',
+          content: reply.content,
+        });
+        expect(await sent(row)).toHaveLength(0);
+        await request(c.server())
+          .post(
+            `/conversations/${row.conversationId}/assistant-drafts/${draft.id}/approve`,
+          )
+          .set('Authorization', c.auth())
+          .send({ revision: draft.revision })
+          .expect(202);
+        expect(await sent(row)).toHaveLength(1);
+      });
+      it('un sticker no cancela la respuesta pendiente', async () => {
+        const row = await say();
+        await say(row.phone, '[Mensaje de WhatsApp no compatible todavía]', {
+          type: 'OTHER',
+        });
+        const scheduled = await drafts(row);
+        expect(scheduled).toHaveLength(1);
+        await due(row);
+        expect((await drafts(row))[0].status).toBe('APPROVED');
+      });
+      it('si OpenAI falla, transfiere a una persona y guarda el motivo', async () => {
+        samantaTestProvider.generate.mockRejectedValueOnce(
+          new SamantaProviderError('AI_QUOTA_EXCEEDED', {
+            inputTokens: 50,
+            outputTokens: 0,
+          }),
+        );
+        const row = await say();
+        await due(row);
+        expect((await drafts(row))[0]).toMatchObject({
+          status: 'FAILED',
+          errorCode: 'AI_QUOTA_EXCEEDED',
+          inputTokens: 50,
+        });
+        expect(await sent(row)).toHaveLength(0);
+        expect(await conversation(row)).toMatchObject({
+          isAssistantPaused: true,
+          assistantPauseReason: 'SAMANTA_HANDOFF',
+        });
+      });
+      it('limita las respuestas por conversación y transfiere al superarlo', async () => {
+        jest.replaceProperty(samantaTestConfig, 'autoMaxPerHour', 1);
+        const row = await say();
+        await due(row);
+        await say(row.phone, 'Gracias, ¿y los domingos?');
+        await due(row);
+        expect(samantaTestProvider.generate).toHaveBeenCalledTimes(1);
+        expect((await drafts(row)).at(-1)).toMatchObject({
+          status: 'FAILED',
+          errorCode: 'AUTO_CONVERSATION_LIMIT',
+        });
+        expect(await conversation(row)).toMatchObject({
+          assistantPauseReason: 'SAMANTA_HANDOFF',
+        });
+      });
+      it('un mensaje durante la generación descarta esa respuesta y responde al nuevo', async () => {
+        const row = await say(undefined, 'Hola');
+        samantaTestProvider.generate.mockImplementationOnce(async () => {
+          await say(row.phone, '¿Tienen estacionamiento?');
+          return reply;
+        });
+        await due(row);
+        const [first, second] = await drafts(row);
+        expect(first).toMatchObject({ status: 'STALE', inputTokens: 100 });
+        expect(second.status).toBe('SCHEDULED');
+        expect(await sent(row)).toHaveLength(0);
+        await due(row);
+        expect(await sent(row)).toHaveLength(1);
+      });
+      it('con la ventana cerrada no llama a OpenAI', async () => {
+        const row = await say(undefined, 'Hola', {
+          occurredAt: new Date(Date.now() - 25 * 3600000).toISOString(),
+        });
+        await due(row);
+        expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+        expect((await drafts(row))[0]).toMatchObject({
+          status: 'FAILED',
+          errorCode: 'AUTO_CANNOT_REPLY',
+        });
+      });
+      it('una conversación en pausa no programa respuestas', async () => {
+        const row = await say();
+        await db().conversation.update({
+          where: { id: row.conversationId },
+          data: { isAssistantPaused: true },
+        });
+        await say(row.phone, 'Otra pregunta');
+        await due(row);
+        expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+        expect((await drafts(row)).map((draft) => draft.status)).toEqual([
+          'STALE',
+        ]);
+      });
+      it('una respuesta abandonada a medias se transfiere a una persona', async () => {
+        const row = await say();
+        const [draft] = await drafts(row);
+        await db().samantaDraft.update({
+          where: { id: draft.id },
+          data: {
+            status: 'GENERATING',
+            generationStartedAt: new Date(),
+            generationExpiresAt: new Date(0),
+          },
+        });
+        await auto().runOnce();
+        expect((await drafts(row))[0]).toMatchObject({
+          status: 'FAILED',
+          errorCode: 'AI_GENERATION_EXPIRED',
+        });
+        expect(await conversation(row)).toMatchObject({
+          assistantPauseReason: 'SAMANTA_HANDOFF',
+        });
+      });
     });
   });
 }

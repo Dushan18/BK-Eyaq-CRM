@@ -1,7 +1,7 @@
 # API de bk-crm para el frontend
 
 > **Estado:** 3 de noviembre de 2026.
-> - bk-crm: rama `main`, commit `9538556` («Messenger»), más los cambios del 3/11 que aún no tienen commit (ver [Cambios recientes del backend](#cambios-recientes-del-backend-3112026)).
+> - bk-crm: rama `main`, commit `9538556` («Messenger»), más los cambios del 3/11 que aún no tienen commit (ver [Cambios recientes del backend](#cambios-recientes-del-backend-3112026)). El modo automático de Samanta (8/11) está en [Cambios del backend del 8/11/2026](#cambios-del-backend-del-8112026-samanta-automática).
 > - ft-crm: rama `main`, commit `aaeb85e`, más los ajustes del BFF que aún no tienen commit (ver [Ya ajustado en ft-crm](#ya-ajustado-en-ft-crm-pendiente-de-commit)).
 >
 > Esta referencia se generó a partir del código fuente del backend y se verificó ruta por ruta contra ese código: roles, validaciones, mensajes de error y forma de las respuestas. Lo que dice de ft-crm se verificó contra su código actual. El plan para pasar ft-crm a modo live está en [05-implementacion-ft-crm.md](05-implementacion-ft-crm.md).
@@ -522,7 +522,7 @@ Columnas:
 
 ### Samanta: borradores con revisión humana
 
-Samanta v1 no responde sola: genera un borrador cuando una persona lo pide, y una persona lo revisa antes de enviarlo. Solo funciona en conversaciones `WHATSAPP` sin pausar.
+Genera un borrador cuando una persona lo pide, y una persona lo revisa antes de enviarlo. Funciona en conversaciones `WHATSAPP`, `FACEBOOK` e `INSTAGRAM` sin pausar. Desde el 8/11, si el servidor tiene el modo automático, además responde sola: ver [04 › Samanta automática](04-bandeja-samanta.md#samanta-automática).
 
 1. **Generar:** `POST /conversations/:id/assistant-drafts` con `Idempotency-Key` y `{ sourceMessageId }`.
    - `sourceMessageId` es el `id` del último mensaje de la conversación, que debe ser `INBOUND` de tipo `TEXT`.
@@ -678,6 +678,29 @@ Hoy funcionan, pero hacen varias llamadas por fila o calculan en el navegador. S
 - pestaña Esperando (una lectura por estado, de hasta 5 páginas cada una, porque `status` acepta un solo valor);
 - etiqueta «Samanta» de los mensajes salientes (cruzar con los borradores aprobados, porque el mensaje no dice que salió de un borrador).
 
+## Cambios del backend del 8/11/2026: Samanta automática
+
+Todavía sin commit. Detalle en [04 › Samanta automática](04-bandeja-samanta.md#samanta-automática).
+
+1. **Samanta responde sola** cuando el servidor tiene `SAMANTA_AUTO_ENABLED=true`. No hay rutas nuevas:
+   - Sus respuestas llegan al historial como `OUTBOUND` con `authorUserId` = `SAMANTA_USER_ID` (`00000000-0000-4000-8000-00000000a0a1`), un usuario de sistema inactivo que no aparece en `GET /users`.
+   - Cada respuesta deja un borrador `mode: "AUTO"` (estados `SCHEDULED` → `GENERATING` → `APPROVED`).
+   - En modo sombra, el borrador queda `READY` para revisión.
+2. **Pausa con motivo:** `Conversation` trae `assistantPauseReason` (`MANUAL`, `OPERATOR_REPLIED`, `SAMANTA_HANDOFF`) y `assistantPausedAt`.
+   - Con el modo automático activo, enviar un mensaje a mano pausa a Samanta en esa conversación (`OPERATOR_REPLIED`).
+   - Samanta se pausa sola al transferir a una persona (`SAMANTA_HANDOFF`).
+3. **`SamantaDraft`:** campos nuevos `mode`, `availableAt` y `generationStartedAt`. `generationExpiresAt` admite `null`, y `promptVersion` pasa a `samanta-v2`.
+4. **Generar borradores:**
+   - Funciona también en Messenger e Instagram; desaparece el 400 `Samanta v1 admite WhatsApp`.
+   - Con la ventana de 24 h cerrada, el canal apagado o sin destinatario, responde el mismo error que enviar (409, 503 o 400) sin llamar a la IA.
+   - Las reacciones, stickers y audios ya no invalidan un borrador ni impiden generar.
+   - Un borrador en `GENERATING` ya no pasa a `STALE` por consultarlo: lo decide el final de la generación.
+5. **Códigos de error nuevos** de los borradores `FAILED`:
+   - de OpenAI: `AI_QUOTA_EXCEEDED` (sin saldo o cuota), `AI_AUTH_FAILED` y `AI_MODEL_NOT_FOUND`;
+   - un 5xx de OpenAI pasa de `AI_REQUEST_REJECTED` a `AI_UNAVAILABLE`;
+   - solo de los automáticos: `AUTO_*` y `AI_CONTEXT_UNAVAILABLE`.
+6. **Límite diario:** cuenta las generaciones por `generationStartedAt`, no los borradores creados. Una respuesta automática descartada antes de generarse no consume cuota.
+
 ## Cambios recientes del backend (3/11/2026)
 
 Respecto de los contratos anteriores (`ft-crm/docs/backend/`), el backend ya incluye:
@@ -768,7 +791,7 @@ Consolidadas de los cuatro módulos, sin repetir y ordenadas por cuánto afectan
 1. **Flujo del dueño.** ¿Cuándo llegan los endpoints para enviar, aceptar o rechazar solicitudes y convertirlas en reservas? Hoy `reservationRequestId` siempre es `null`, seis estados de solicitud son inalcanzables y Samanta no crea solicitudes. ¿Deben aparecer ya en filtros y KPI? ([03](03-clientes-reservas.md#preguntas-abiertas), pregunta 3)
 2. **Capacidades del servidor.** El frontend solo se entera de que WhatsApp, Messenger o Samanta están apagados por el 503 al usarlos, y no puede consultar cuántas generaciones de Samanta quedan. ¿Habrá un endpoint de capacidades y de cuota? ([04](04-bandeja-samanta.md#preguntas-abiertas), preguntas 11 y 12)
 3. **Nombres de los autores.** `GET /users` es solo para ADMIN, así que OWNER y OPERATOR no pueden convertir en un nombre el `authorUserId` de los mensajes ni el `createdById`, `reviewedById` y `editedById` de los borradores de Samanta. Las notas y reprogramaciones de reservas ya traen el nombre (`author` y `changedBy`). ¿Se añadirá el nombre a la respuesta o un endpoint ligero de usuarios? ([01](01-auth-usuarios.md#preguntas-abiertas), pregunta 12; [04](04-bandeja-samanta.md#preguntas-abiertas), pregunta 2)
-4. **Samanta en Messenger.** En v1 responde 400 `Samanta v1 admite WhatsApp`. ¿Se habilitará para `FACEBOOK`? ([04](04-bandeja-samanta.md#preguntas-abiertas), pregunta 8)
+4. ~~**Samanta en Messenger.**~~ Resuelta el 8/11: Samanta atiende en WhatsApp, Messenger e Instagram ([04](04-bandeja-samanta.md#preguntas-abiertas), pregunta 8).
 5. **Identidad de Messenger en el cliente.** La respuesta no dice si un cliente `FACEBOOK` es una identidad de Messenger, y cambiarle el canal responde 400. ¿Se añadirá un indicador (p. ej. `hasProviderIdentity`)? ([03](03-clientes-reservas.md#preguntas-abiertas), pregunta 1)
 6. **Imágenes, logo y adjuntos.** No hay endpoint de subida (solo URLs `http(s)` ya alojadas) ni para descargar o previsualizar los adjuntos de los mensajes. ¿Dónde se alojarán las imágenes? ¿Habrá un proxy de medios? ([02](02-configuracion-catalogo.md#preguntas-abiertas), pregunta 1; [04](04-bandeja-samanta.md#preguntas-abiertas), pregunta 1)
 

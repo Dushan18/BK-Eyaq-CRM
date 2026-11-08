@@ -1,6 +1,6 @@
 # Bandeja: conversaciones, mensajes (WhatsApp y Messenger) y borradores de Samanta
 
-> Parte de la [referencia de la API de bk-crm para el frontend](README.md). Estado: 3 de noviembre de 2026.
+> Parte de la [referencia de la API de bk-crm para el frontend](README.md). Estado: 3 de noviembre de 2026, con el modo automático de Samanta del 8 de noviembre ([Samanta automática](#samanta-automática)).
 >
 > Desde el navegador, cada ruta se pide como `/api/backend<ruta>` y el BFF añade el token. Las convenciones comunes (errores, sesión, roles, paginación, fechas e idempotencia) están en el [README](README.md#convenciones-generales); lo propio de este módulo, en [Convenciones de este módulo](#convenciones-de-este-módulo).
 
@@ -22,6 +22,7 @@ Bandeja omnicanal del CRM. Cubre las conversaciones de WhatsApp y Messenger (can
 - [Editar un borrador](#editar-un-borrador) — `PATCH /conversations/:id/assistant-drafts/:draftId`
 - [Aprobar un borrador y encolar el envío](#aprobar-un-borrador-y-encolar-el-envío) — `POST /conversations/:id/assistant-drafts/:draftId/approve`
 - [Rechazar un borrador](#rechazar-un-borrador) — `POST /conversations/:id/assistant-drafts/:draftId/reject`
+- [Samanta automática](#samanta-automática) — sin rutas nuevas: qué cambia en la Bandeja cuando Samanta responde sola
 - [Webhooks de Meta (no usar desde el frontend)](#webhooks-de-meta-no-usar-desde-el-frontend) — `GET /webhooks/whatsapp` · `POST /webhooks/whatsapp` · `GET /webhooks/messenger` · `POST /webhooks/messenger`
 - [Modelos](#modelos)
 - [Estados y transiciones](#estados-y-transiciones)
@@ -466,7 +467,11 @@ Ninguno (solo lectura). Ver el historial no marca nada como leído: para eso est
   | `failedAt` | Fallo del procesamiento. | Fallo del envío o de la entrega. |
   | `readAt` | Lectura del equipo en el CRM. | Siempre `null`. |
 
-- **Autor:** `authorUserId` es `null` en los `INBOUND`. En los `OUTBOUND` es quien envió el mensaje o quien aprobó el borrador de Samanta: nunca es `null`. Para marcar un mensaje como de Samanta, crúzalo con `outboundMessageId` de los borradores `APPROVED` ([Listar borradores](#listar-borradores-de-samanta)). La regla actual de ft-crm, «`OUTBOUND` sin autor = Samanta» (`messageAuthor`), nunca se cumple con datos reales.
+- **Autor:** `authorUserId` es `null` en los `INBOUND`. En los `OUTBOUND` nunca es `null`:
+  - Si lo envió Samanta sola ([modo automático](#samanta-automática)), es el usuario de sistema `SAMANTA_USER_ID` = `00000000-0000-4000-8000-00000000a0a1`.
+  - Si no, es quien envió el mensaje o quien aprobó el borrador.
+  - Un mensaje es de Samanta si su autor es `SAMANTA_USER_ID` o si su id es el `outboundMessageId` de un borrador `APPROVED` ([Listar borradores](#listar-borradores-de-samanta)).
+  - La regla actual de ft-crm, «`OUTBOUND` sin autor = Samanta» (`messageAuthor`), nunca se cumple con datos reales.
 - **Nombre del autor:** solo llega el id, y `GET /users` es solo para ADMIN. Muestra «Tú» si coincide con `GET /auth/me`, el nombre del responsable si coincide con `assignedUser.id`, o «Equipo».
 - **Tipos de mensaje:**
   - `TEXT`: el texto va en `content`. Los entrantes pueden tener hasta 16 000 caracteres.
@@ -599,8 +604,9 @@ Idempotency-Key: 3b9d6c1e-2f4a-4c8e-9b1d-5a7c9e2f4b6d
 
 - Crea un mensaje `OUTBOUND` `TEXT` en `QUEUED`, con su entrada en la cola de envío. El autor es quien llama. El destinatario se fija en ese momento: el teléfono normalizado (WhatsApp) o el PSID (Messenger) del cliente.
 - La conversación suma 1 a su secuencia y actualiza `lastMessageAt` y `updatedAt`: sube en la bandeja.
-- Los borradores `READY` o `GENERATING` de la conversación quedan desactualizados: pasan a `STALE` en la siguiente consulta o acción sobre ellos.
-- No cambia el responsable, la pausa, `unreadCount` ni el `lastContactAt` del cliente.
+- Los borradores `READY` de la conversación quedan desactualizados: pasan a `STALE` en la siguiente consulta o acción sobre ellos. Uno en `GENERATING` queda `STALE` al terminar, y una respuesta automática pendiente se descarta.
+- Con el [modo automático](#samanta-automática) activo, pausa a Samanta en esa conversación si no estaba en pausa: `isAssistantPaused: true` y `assistantPauseReason: "OPERATOR_REPLIED"`. Así no responden los dos a la vez. Sin modo automático no toca la pausa.
+- No cambia el responsable, `unreadCount` ni el `lastContactAt` del cliente.
 - Un worker hace el envío a Meta fuera de la petición. Repetir la misma clave no tiene efectos.
 
 **Notas para el frontend**
@@ -781,13 +787,18 @@ Content-Type: application/json
 
 **Efectos**
 
-- Cambia `isAssistantPaused` y `updatedAt`. Enviar el valor que ya tiene también responde 200.
-- Mientras siga en pausa, generar un borrador responde 409, y los borradores `READY` o `GENERATING` pasan a `STALE` en la siguiente consulta o acción sobre ellos.
+- Cambia `isAssistantPaused` y `updatedAt`.
+- Pausar fija `assistantPauseReason: "MANUAL"` y `assistantPausedAt` en ese momento, aunque ya estuviera en pausa por otro motivo. Reanudar deja los dos en `null`. Enviar el valor que ya tiene también responde 200.
+- Mientras siga en pausa:
+  - Samanta no responde sola.
+  - Generar un borrador responde 409.
+  - Los borradores `READY` pasan a `STALE` en la siguiente consulta o acción sobre ellos; uno en `GENERATING` queda `STALE` al terminar.
 - No detiene la recepción ni el envío de mensajes, no impide las respuestas manuales y no cambia el responsable.
 
 **Notas para el frontend**
 
-- Samanta v1 no responde sola: la pausa solo afecta a los borradores. El «modo» que muestra ft-crm (Samanta, En pausa, Operador) es un concepto de la interfaz que se deriva de la pausa y del responsable (`conversationMode`).
+- Con el [modo automático](#samanta-automática), la pausa es lo que decide si Samanta responde sola en la conversación. Sin modo automático solo afecta a los borradores.
+- El «modo» que muestra ft-crm (Samanta, En pausa, Operador) es un concepto de la interfaz que se deriva de la pausa y del responsable (`conversationMode`). `assistantPauseReason` dice además por qué se pausó.
 - Reanudar no recupera los borradores que ya pasaron a `STALE`. Un borrador que nadie consultó durante la pausa sigue `READY` al reanudar, si no hubo otros cambios. Refresca el panel de Samanta y la cabecera.
 - ft-crm encadena esta ruta con la asignación («Pasar a humano», «Devolver a Samanta»). Son llamadas independientes y cada una puede fallar por su cuenta: maneja el error de cada paso.
 
@@ -930,7 +941,7 @@ Content-Type: application/json
 
 | Campo | Tipo | Obligatorio | Reglas |
 |---|---|---|---|
-| `sourceMessageId` | `Uuid` | Sí | UUID del último mensaje de la conversación (el de `sequence` más alto). Tiene que ser `INBOUND`, de tipo `TEXT`, con texto que no sea solo espacios y `content.length` ≤ 4096. No admite `null`. |
+| `sourceMessageId` | `Uuid` | Sí | UUID del último mensaje de texto del cliente. Tiene que ser `INBOUND`, de tipo `TEXT`, con texto que no sea solo espacios y `content.length` ≤ 4096. Después de él solo puede haber mensajes `INBOUND` de tipo `OTHER` (reacciones, stickers, audios), que no cuentan. No admite `null`. |
 | Cualquier otro | — | — | 400 `property <campo> should not exist` (p. ej. `model`). |
 
 **Ejemplo de petición**
@@ -964,9 +975,10 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
   "reviewedById": null,
   "editedById": null,
   "status": "READY",
+  "mode": "MANUAL",
   "revision": 1,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-drafts-v1",
+  "promptVersion": "samanta-v2",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
   "content": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
@@ -976,6 +988,8 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
   "inputTokens": 2148,
   "outputTokens": 87,
   "errorCode": null,
+  "availableAt": null,
+  "generationStartedAt": "2026-11-03T02:32:50.058Z",
   "generationExpiresAt": "2026-11-03T02:33:20.051Z",
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": null,
@@ -1000,13 +1014,15 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
 | 403 | `Conversación asignada a otro operador` | Un OPERATOR sin ADMIN actúa sobre una conversación asignada a otra persona. |
 | 409 | `Idempotency-Key utilizada con otros datos` | La clave ya se usó en esta conversación con otro `sourceMessageId` o por otro usuario. |
 | 409 | `Samanta está pausada en esta conversación` | `isAssistantPaused` es `true`. |
-| 400 | `Samanta v1 admite WhatsApp` | La conversación no es `WHATSAPP` (p. ej. es de Messenger). |
-| 409 | `Selecciona el último mensaje entrante de texto (máximo 4096 caracteres)` | `sourceMessageId` no es de esta conversación, no es el último mensaje, no es `INBOUND` o `TEXT`, está vacío o supera 4096. |
-| 429 | `Límite de generación de Samanta alcanzado` | Se llegó al límite diario (borradores creados desde las 00:00 UTC por todos los usuarios, incluidos los fallidos) o hay tantas generaciones en curso como permite el límite simultáneo. El body es `{ "statusCode": 429, "message": "…" }`, sin `error` ni `Retry-After`. |
+| 409 | `Selecciona el último mensaje entrante de texto (máximo 4096 caracteres)` | `sourceMessageId` no es de esta conversación, no es `INBOUND` o `TEXT`, está vacío, supera 4096 o después llegó otro mensaje que cuenta (cualquier `OUTBOUND` o un `INBOUND` que no sea `OTHER`). |
+| 503 | `WhatsApp no está habilitado` · `Messenger no está habilitado` · `Instagram no está habilitado` | El canal de la conversación está apagado en el servidor. Se comprueba antes de llamar a la IA. |
+| 400 | `Conversación sin destinatario habilitado` | El canal no tiene envío (p. ej. `WEBSITE`) o el cliente no tiene destinatario. |
+| 409 | `Ventana de WhatsApp cerrada; se requiere una plantilla aprobada` (o el texto de ventana cerrada de Messenger o Instagram) | El último mensaje del cliente tiene más de 24 h. Antes se generaba igual y el borrador no se podía aprobar; ahora no se llama a la IA. |
+| 429 | `Límite de generación de Samanta alcanzado` | Se llegó al límite diario (generaciones iniciadas desde las 00:00 UTC, manuales y automáticas, incluidas las fallidas) o hay tantas generaciones en curso como permite el límite simultáneo. El body es `{ "statusCode": 429, "message": "…" }`, sin `error` ni `Retry-After`. |
 | 409 | `Ya hay un borrador en generación` | Otro borrador de esta conversación sigue en `GENERATING` y no venció. |
 | 409 | `Configura el restaurante antes de usar Samanta` | Falta la configuración del restaurante (`PUT /restaurant-config`). |
-| 409 | `Contexto comercial demasiado extenso; requiere revisión manual` | La configuración del restaurante y el catálogo superan 32 000 bytes en UTF-8. |
-| 409 | `Historial demasiado extenso; requiere revisión manual` | El contexto completo (información comercial y hasta 10 mensajes) supera 48 000 bytes en UTF-8. |
+| 409 | `Contexto comercial demasiado extenso; requiere revisión manual` | La configuración del restaurante sola supera 32 000 bytes en UTF-8. Si lo que no cabe es el catálogo, se envían menos elementos en lugar de fallar. |
+| 409 | `Historial demasiado extenso; requiere revisión manual` | Solo si ni siquiera cabe el último mensaje: los anteriores se omiten, del más antiguo al más reciente, hasta que el contexto quepa en 48 000 bytes. |
 | 409 | `Conflicto de mensajería; vuelve a intentarlo` | Contención en la base de datos. Reintenta con la misma clave. |
 | 413 | `El cuerpo de la petición supera el tamaño máximo permitido` | El body supera 100 kb. |
 | 415 | `unsupported charset "<CHARSET>"` | `Content-Type` con un charset que no empieza por `utf-` (p. ej. `latin1`, o `utf8` sin guion). `apiFetch` no envía `charset`, así que desde ft-crm no ocurre. |
@@ -1015,14 +1031,28 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
 **Efectos**
 
 - Crea el borrador en `GENERATING` antes de llamar a la IA (las consultas lo ven así mientras tanto) y lo deja en `READY`, `STALE` o `FAILED` al terminar.
-- Cuenta para el límite diario aunque falle. Si la IA llegó a responder, los tokens quedan en `inputTokens` y `outputTokens`, también cuando el borrador termina `STALE` o `FAILED`.
-- Envía a la IA la configuración del restaurante, hasta 30 elementos activos y aprobados de categorías activas (con hasta 10 variantes y 10 preguntas frecuentes cada uno) y los últimos 10 mensajes de la conversación (entrantes y salientes ya enviados). No envía datos de contacto del cliente, notas internas ni otras conversaciones.
+- Cuenta para el límite diario aunque falle. Si OpenAI cobró la llamada, los tokens quedan en `inputTokens` y `outputTokens`, también cuando el borrador termina `STALE` o `FAILED` (por ejemplo, una respuesta cortada por el límite de tokens).
+- Envía a la IA:
+  - la configuración del restaurante, con su WhatsApp, correo, web y un enlace de Google Maps si tiene coordenadas;
+  - hasta 30 elementos activos y aprobados de categorías activas, sin promociones vencidas ni eventos pasados, con hasta 10 variantes y 10 preguntas frecuentes cada uno;
+  - la fecha, la hora y el día de la semana locales del restaurante;
+  - el nombre del cliente;
+  - el canal con su largo máximo de respuesta;
+  - los últimos 20 mensajes de la conversación (entrantes y salientes ya enviados), cada uno con su hora local.
+
+  No envía el teléfono ni el correo del cliente, ni notas internas ni otras conversaciones.
 - No envía nada al cliente ni crea solicitudes ni reservas.
 - Con la misma clave y los mismos datos no vuelve a llamar a la IA: devuelve el borrador que ya existe, con el estado recalculado.
 
 **Notas para el frontend**
 
-- **Cuándo habilitar «Generar»:** el usuario tiene ADMIN u OPERATOR; la conversación es `WHATSAPP`; `isAssistantPaused` es `false`; el último mensaje (`data[0]` de la página 1) es `INBOUND` y `TEXT`, con texto y `content.length` ≤ 4096; y, si el usuario es OPERATOR sin ADMIN, la conversación está libre o es suya. En Messenger oculta el botón.
+- **Cuándo habilitar «Generar»:**
+  - El usuario tiene ADMIN u OPERATOR.
+  - La conversación es `WHATSAPP`, `FACEBOOK` o `INSTAGRAM`.
+  - `isAssistantPaused` es `false`.
+  - El último mensaje que no es un `INBOUND` de tipo `OTHER` es `INBOUND` y `TEXT`, con texto y `content.length` ≤ 4096. Las reacciones, stickers y audios que llegaron después no bloquean.
+  - Si el usuario es OPERATOR sin ADMIN, la conversación está libre o es suya.
+  - Si el último mensaje del cliente tiene más de 24 h, deshabilítalo y explica que la ventana está cerrada.
 - **Espera:** la petición dura lo que tarde la IA, hasta `SAMANTA_TIMEOUT_MS`. Muestra un estado de carga y no la canceles.
 - **Recuperar tras un corte:** si la petición falla por red o con 504, repítela con la misma clave. Devuelve el borrador, que puede venir `GENERATING`; en ese caso síguelo con [Ver un borrador](#ver-un-borrador-de-samanta). Una clave nueva es otra generación: consume cuota y tokens.
 - **Resultado:** sin error, siempre 201. Mira `status`:
@@ -1030,9 +1060,26 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
   - `STALE`: durante la generación llegó otro mensaje, se pausó a Samanta o cambió la información comercial. Si fue esto último, trae el texto de todos modos.
   - `FAILED`: la IA falló; `errorCode` dice por qué.
   - `GENERATING`: solo al repetir la clave mientras la primera petición sigue en curso.
-- **`errorCode` de un `FAILED`:** `AI_TIMEOUT` (la IA tardó demasiado), `AI_RATE_LIMITED` (el proveedor limitó), `AI_REQUEST_REJECTED`, `AI_INVALID_RESPONSE`, `AI_INCOMPLETE_RESPONSE`, `AI_REFUSED_RESPONSE`, `AI_RESPONSE_TOO_LARGE`, `AI_UNAVAILABLE` (cualquier otro fallo) y `AI_GENERATION_EXPIRED` (la generación quedó abandonada). En todos los casos, muestra «No se pudo generar» y ofrece generar de nuevo con otra clave.
+- **`errorCode` de un `FAILED`:**
+  - Muestra siempre «No se pudo generar» y ofrece generar de nuevo con otra clave.
+  - Para el equipo, distingue entre los fallos que se resuelven solos (reintentar) y los de configuración, que alguien tiene que corregir.
+
+  | `errorCode` | Causa | Qué hacer |
+  |---|---|---|
+  | `AI_TIMEOUT` | La IA tardó más de `SAMANTA_TIMEOUT_MS` | Reintentar |
+  | `AI_RATE_LIMITED` | OpenAI limitó la velocidad | Reintentar más tarde |
+  | `AI_UNAVAILABLE` | OpenAI falló (5xx) o hubo un error de red | Reintentar más tarde |
+  | `AI_QUOTA_EXCEEDED` | La cuenta de OpenAI no tiene saldo, facturación o cuota | Avisar al administrador: reintentar no sirve |
+  | `AI_AUTH_FAILED` | Clave inválida o región no admitida (401/403) | Avisar al administrador |
+  | `AI_MODEL_NOT_FOUND` | El modelo de `SAMANTA_MODEL` no existe o la cuenta no tiene acceso | Avisar al administrador |
+  | `AI_REQUEST_REJECTED` | OpenAI rechazó la petición (otro 4xx) | Avisar al administrador |
+  | `AI_INCOMPLETE_RESPONSE` | La respuesta quedó cortada, en general por `SAMANTA_MAX_OUTPUT_TOKENS` | Reintentar; si se repite, subir el límite |
+  | `AI_INVALID_RESPONSE` · `AI_REFUSED_RESPONSE` · `AI_RESPONSE_TOO_LARGE` | Respuesta inválida, rechazada o demasiado grande | Reintentar |
+  | `AI_GENERATION_EXPIRED` | La generación quedó abandonada | Reintentar |
+
+  Las respuestas automáticas usan además códigos `AUTO_*` ([Samanta automática](#samanta-automática)).
 - **Qué mostrar en `READY`:** el texto editable, `intent`, un aviso si `requiresHuman` es `true`, `missingFields` como etiquetas de texto libre y una cuenta atrás hasta `expiresAt` (15 min desde que se pidió).
-- **Límites:** el 429 es global, no por usuario, y no hay endpoint para consultar la cuota restante. Solo puede haber una generación en curso por conversación.
+- **Límites:** el 429 es global, no por usuario, y no hay endpoint para consultar la cuota restante. Las respuestas automáticas consumen la misma cuota diaria. Solo puede haber una generación en curso por conversación.
 - **503:** `Samanta está desactivada` llega sin `code`: no lo trates como falta de conexión ([Errores comunes](#errores-comunes-a-todas-las-rutas)).
 
 ## Listar borradores de Samanta
@@ -1068,9 +1115,10 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "reviewedById": "9a7b5c3d-1e2f-4a6b-8c9d-0e1f2a3b4c5d",
       "editedById": "9a7b5c3d-1e2f-4a6b-8c9d-0e1f2a3b4c5d",
       "status": "APPROVED",
+      "mode": "MANUAL",
       "revision": 2,
       "model": "gpt-6-luna",
-      "promptVersion": "samanta-drafts-v1",
+      "promptVersion": "samanta-v2",
       "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
       "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
       "content": "¡Hola, Lucía! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? En breve te confirmamos la disponibilidad.",
@@ -1080,6 +1128,8 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "inputTokens": 2148,
       "outputTokens": 87,
       "errorCode": null,
+      "availableAt": null,
+      "generationStartedAt": "2026-11-03T02:32:50.058Z",
       "generationExpiresAt": "2026-11-03T02:33:20.051Z",
       "expiresAt": "2026-11-03T02:47:50.051Z",
       "reviewedAt": "2026-11-03T02:34:02.415Z",
@@ -1097,9 +1147,10 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "reviewedById": null,
       "editedById": null,
       "status": "FAILED",
+      "mode": "MANUAL",
       "revision": 1,
       "model": "gpt-6-luna",
-      "promptVersion": "samanta-drafts-v1",
+      "promptVersion": "samanta-v2",
       "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
       "originalContent": null,
       "content": null,
@@ -1109,6 +1160,8 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "inputTokens": null,
       "outputTokens": null,
       "errorCode": "AI_TIMEOUT",
+      "availableAt": null,
+      "generationStartedAt": "2026-11-03T02:32:50.058Z",
       "generationExpiresAt": "2026-11-02T23:41:37.512Z",
       "expiresAt": "2026-11-02T23:56:07.512Z",
       "reviewedAt": null,
@@ -1175,9 +1228,10 @@ No tiene query: si envías parámetros, se ignoran.
   "reviewedById": null,
   "editedById": null,
   "status": "GENERATING",
+  "mode": "MANUAL",
   "revision": 1,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-drafts-v1",
+  "promptVersion": "samanta-v2",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": null,
   "content": null,
@@ -1187,6 +1241,8 @@ No tiene query: si envías parámetros, se ignoran.
   "inputTokens": null,
   "outputTokens": null,
   "errorCode": null,
+  "availableAt": null,
+  "generationStartedAt": "2026-11-03T02:32:50.058Z",
   "generationExpiresAt": "2026-11-03T02:33:20.051Z",
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": null,
@@ -1272,9 +1328,10 @@ Content-Type: application/json
   "reviewedById": null,
   "editedById": "9a7b5c3d-1e2f-4a6b-8c9d-0e1f2a3b4c5d",
   "status": "READY",
+  "mode": "MANUAL",
   "revision": 2,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-drafts-v1",
+  "promptVersion": "samanta-v2",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
   "content": "¡Hola, Lucía! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? En breve te confirmamos la disponibilidad.",
@@ -1284,6 +1341,8 @@ Content-Type: application/json
   "inputTokens": 2148,
   "outputTokens": 87,
   "errorCode": null,
+  "availableAt": null,
+  "generationStartedAt": "2026-11-03T02:32:50.058Z",
   "generationExpiresAt": "2026-11-03T02:33:20.051Z",
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": null,
@@ -1380,9 +1439,10 @@ Content-Type: application/json
   "reviewedById": "9a7b5c3d-1e2f-4a6b-8c9d-0e1f2a3b4c5d",
   "editedById": "9a7b5c3d-1e2f-4a6b-8c9d-0e1f2a3b4c5d",
   "status": "APPROVED",
+  "mode": "MANUAL",
   "revision": 2,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-drafts-v1",
+  "promptVersion": "samanta-v2",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
   "content": "¡Hola, Lucía! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? En breve te confirmamos la disponibilidad.",
@@ -1392,6 +1452,8 @@ Content-Type: application/json
   "inputTokens": 2148,
   "outputTokens": 87,
   "errorCode": null,
+  "availableAt": null,
+  "generationStartedAt": "2026-11-03T02:32:50.058Z",
   "generationExpiresAt": "2026-11-03T02:33:20.051Z",
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": "2026-11-03T02:34:02.415Z",
@@ -1491,9 +1553,10 @@ Content-Type: application/json
   "reviewedById": "2e4a6c8e-0b2d-4f6a-8c1e-3a5c7e9b1d3f",
   "editedById": null,
   "status": "REJECTED",
+  "mode": "MANUAL",
   "revision": 1,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-drafts-v1",
+  "promptVersion": "samanta-v2",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Gracias por escribirnos. ¿Para qué fecha y cuántas personas deseas la reserva?",
   "content": "¡Hola! Gracias por escribirnos. ¿Para qué fecha y cuántas personas deseas la reserva?",
@@ -1503,6 +1566,8 @@ Content-Type: application/json
   "inputTokens": 1984,
   "outputTokens": 41,
   "errorCode": null,
+  "availableAt": null,
+  "generationStartedAt": "2026-11-03T03:05:11.337Z",
   "generationExpiresAt": "2026-11-03T03:05:41.330Z",
   "expiresAt": "2026-11-03T03:20:11.330Z",
   "reviewedAt": "2026-11-03T03:06:02.904Z",
@@ -1541,6 +1606,55 @@ Content-Type: application/json
 - Funciona aunque Samanta esté desactivada: no responde 503.
 - Repetirlo con el mismo usuario y la misma `revision` responde 200 con el mismo borrador.
 - No hace falta rechazar para descartar: un borrador sin usar deja de servir con el siguiente mensaje o a los 15 min, y queda `STALE` en la siguiente consulta. Rechazar deja constancia de quién lo descartó.
+
+## Samanta automática
+
+No hay rutas nuevas. Con `SAMANTA_AUTO_ENABLED=true` en el servidor, Samanta responde sola a cada mensaje de texto del cliente en las conversaciones sin pausa de los canales configurados (`SAMANTA_AUTO_CHANNELS`: WhatsApp, Messenger e Instagram). El frontend lo ve en las rutas que ya usa.
+
+**Flujo**
+
+1. Llega un mensaje de texto. Al procesarlo, el backend crea un borrador `mode: "AUTO"` en `SCHEDULED` con `availableAt` = llegada + `SAMANTA_AUTO_DELAY_MS` (8 s por defecto). Aparece en [Listar borradores](#listar-borradores-de-samanta).
+2. Si el cliente escribe otra vez antes de `availableAt`, ese borrador pasa a `STALE` y se crea otro para el mensaje nuevo: una sola respuesta para varios mensajes seguidos. Las reacciones, stickers y audios no programan respuesta ni cancelan la pendiente.
+3. Llegado `availableAt`, pasa a `GENERATING` y la IA responde con el historial.
+4. Con envío activo, pasa a `APPROVED`: el mensaje se encola como cualquier envío, con `authorUserId` y `reviewedById` = `SAMANTA_USER_ID`, y aparece en el historial. En modo sombra (`SAMANTA_AUTO_SEND=false`) queda en `READY` y no se envía nada: el equipo lo revisa y lo aprueba o rechaza como uno manual.
+
+**Cuándo deja de responder (pausa automática)**
+
+| Situación | Qué pasa | `assistantPauseReason` |
+|---|---|---|
+| El cliente pide una persona, reclama, cancela o cambia una reserva, menciona alergias, o confirma los datos de una reserva | Samanta envía su respuesta (p. ej. «Te comunico con una persona del equipo») y pausa la conversación | `SAMANTA_HANDOFF` |
+| Falla la IA, el envío se rechaza o se supera un límite | Pausa sin enviar nada. El borrador queda `FAILED` con su `errorCode` | `SAMANTA_HANDOFF` |
+| Un operador envía un mensaje a mano | Pausa; la respuesta automática pendiente se descarta (`STALE`) | `OPERATOR_REPLIED` |
+| Alguien pausa con `PATCH :id/assistant` | Pausa | `MANUAL` |
+
+Una conversación pausada no se reanuda sola. Al reanudarla (`{ "paused": false }`), Samanta responde desde el siguiente mensaje del cliente; los que llegaron durante la pausa los atiende la persona.
+
+**`errorCode` de las respuestas automáticas**
+
+| `errorCode` | Causa | ¿Pausa? |
+|---|---|---|
+| `AUTO_DAILY_LIMIT` | Se agotó `SAMANTA_DAILY_LIMIT` (compartido con los borradores manuales) | Sí |
+| `AUTO_CONVERSATION_LIMIT` | Se superó `SAMANTA_AUTO_MAX_PER_HOUR` respuestas en la conversación en una hora | Sí |
+| `AUTO_SEND_REJECTED` | El canal rechazó el texto (largo, ventana cerrada mientras se generaba) | Sí |
+| `AI_CONTEXT_UNAVAILABLE` | Falta la configuración del restaurante o no cabe en el contexto | Sí |
+| `AUTO_EXPIRED` · `AUTO_INTERNAL_ERROR` | La respuesta quedó demasiado tiempo pendiente, o hubo un error interno | Sí |
+| `AUTO_CANNOT_REPLY` | El canal está apagado, el cliente no tiene destinatario o la ventana de 24 h está cerrada. No se llama a la IA | No |
+| `AI_*` | Igual que en los manuales ([Generar](#generar-un-borrador-con-samanta)) | Sí |
+
+**Notas para el frontend**
+
+- **Mensajes de Samanta:** `authorUserId === SAMANTA_USER_ID`. Muéstralos como «Samanta», no como «Equipo».
+- **Panel de Samanta:**
+  - Un borrador `AUTO` en `SCHEDULED` o `GENERATING` es «Samanta está respondiendo».
+  - En `APPROVED` ya se envió: no ofrezcas aprobarlo.
+  - En `READY` (modo sombra), ofrece revisarlo, aprobarlo o rechazarlo igual que uno manual.
+  - Sigue en pie la regla de aprobación: un OPERATOR sin ADMIN solo puede en conversaciones libres o suyas.
+- **Bandeja:**
+  - Destaca las conversaciones con `assistantPauseReason: "SAMANTA_HANDOFF"`: Samanta pidió que las atienda una persona.
+  - El motivo concreto está en el último borrador `AUTO` (`intent`, `requiresHuman`, `errorCode`).
+  - El `conversationMode` actual sigue sirviendo: sin pausa es «Samanta».
+- **Actualización:** no hay eventos. El polling que ya existe trae la pausa (lista y detalle de conversaciones), los mensajes de Samanta (historial) y los borradores (`qk.assistantDrafts(id)`).
+- **Reservas:** Samanta recoge fecha, hora, personas y nombre, y transfiere. No confirma ni crea solicitudes ni reservas.
 
 ## Webhooks de Meta (no usar desde el frontend)
 `GET /webhooks/whatsapp` · `POST /webhooks/whatsapp` · `GET /webhooks/messenger` · `POST /webhooks/messenger`
@@ -1840,7 +1954,9 @@ Respuesta de cada fila de `GET /conversations`, de `GET /conversations/:id` y de
 | `id` | `Uuid` | No | Id de la conversación. |
 | `customerId` | `Uuid` | No | Cliente. Hay una sola conversación por cliente y canal. |
 | `channel` | `ContactChannel` | No | Canal. Messenger es `FACEBOOK`. Hoy solo se crean conversaciones al llegar un mensaje de WhatsApp o Messenger. |
-| `isAssistantPaused` | boolean | No | `true`: no se pueden generar ni usar borradores de Samanta. Por defecto, `false`. |
+| `isAssistantPaused` | boolean | No | `true`: Samanta no responde sola ni se pueden generar o usar borradores. Por defecto, `false`. |
+| `assistantPauseReason` | `AssistantPauseReason` | Sí | Por qué está en pausa: `MANUAL` (alguien la pausó con `PATCH :id/assistant`), `OPERATOR_REPLIED` (un operador escribió a mano con el modo automático activo) o `SAMANTA_HANDOFF` (Samanta transfirió la conversación a una persona). `null` si no está en pausa. Las pausas anteriores al 8/11 tienen `MANUAL`. |
+| `assistantPausedAt` | `IsoDateTime` | Sí | Desde cuándo está en pausa. `null` si no lo está. |
 | `assignedUserId` | `Uuid` | Sí | Responsable. `null`: conversación libre. |
 | `lastMessageAt` | `IsoDateTime` | Sí | Hora de llegada (del servidor) del último `INBOUND` o de encolado del último `OUTBOUND`. Ordena la bandeja. `null` si la conversación no tiene mensajes. |
 | `createdAt` | `IsoDateTime` | No | Creación: el primer mensaje del cliente por ese canal. |
@@ -1888,7 +2004,7 @@ Respuesta de cada fila de `GET /conversations/:id/messages` y de `POST /conversa
 | `status` | `MessageStatus` | No | Ver [Estados y transiciones](#estados-y-transiciones). |
 | `type` | `MessageType` | No | `TEXT`, `IMAGE`, `FILE` u `OTHER`. Los salientes siempre son `TEXT`. |
 | `content` | string | Sí | Texto. `null` solo en `IMAGE` o `FILE` sin pie de foto. |
-| `authorUserId` | `Uuid` | Sí | `INBOUND`: `null`. `OUTBOUND`: quien envió o aprobó el borrador; nunca `null`. |
+| `authorUserId` | `Uuid` | Sí | `INBOUND`: `null`. `OUTBOUND`: quien envió o aprobó el borrador, o `SAMANTA_USER_ID` si Samanta respondió sola; nunca `null`. |
 | `occurredAt` | `IsoDateTime` | Sí | `INBOUND`: hora que informa Meta. `OUTBOUND`: `null`. |
 | `receivedAt` | `IsoDateTime` | Sí | `INBOUND`: llegada a bk-crm. `OUTBOUND`: `null`. |
 | `processedAt` | `IsoDateTime` | Sí | `INBOUND` en `PROCESSED`: fin del procesamiento. |
@@ -1931,28 +2047,31 @@ Respuesta de todas las rutas de borradores: la fila completa del borrador.
 | Campo | Tipo | Null | Significado |
 |---|---|---|---|
 | `id` | `Uuid` | No | Id del borrador. |
-| `conversationId` | `Uuid` | No | Conversación (siempre `WHATSAPP`). |
-| `sourceMessageId` | `Uuid` | No | Mensaje `INBOUND` al que responde. |
-| `baselineSequence` | number | No | `sequence` del último mensaje al generar. Si llega otro, el borrador queda desactualizado. |
-| `idempotencyKey` | string | No | Clave usada al generar. |
-| `createdById` | `Uuid` | No | Quien pidió la generación. |
-| `reviewedById` | `Uuid` | Sí | Quien aprobó o rechazó. |
+| `conversationId` | `Uuid` | No | Conversación (`WHATSAPP`, `FACEBOOK` o `INSTAGRAM`). |
+| `sourceMessageId` | `Uuid` | No | Mensaje `INBOUND` de texto al que responde. |
+| `baselineSequence` | number | No | `sequence` de `sourceMessageId`. Si después llega un mensaje que cuenta (cualquier `OUTBOUND`, o un `INBOUND` que no sea `OTHER`), el borrador queda desactualizado. |
+| `idempotencyKey` | string | No | Clave usada al generar. En los automáticos, `auto-<sourceMessageId>`. |
+| `createdById` | `Uuid` | No | Quien pidió la generación; `SAMANTA_USER_ID` en los automáticos. |
+| `reviewedById` | `Uuid` | Sí | Quien aprobó o rechazó; `SAMANTA_USER_ID` si Samanta lo envió sola. |
 | `editedById` | `Uuid` | Sí | Último usuario que editó el texto. |
 | `status` | `SamantaDraftStatus` | No | Ver [Estados y transiciones](#estados-y-transiciones). |
+| `mode` | `SamantaDraftMode` | No | `MANUAL`: lo pidió una persona con [Generar](#generar-un-borrador-con-samanta). `AUTO`: lo creó Samanta al llegar un mensaje ([Samanta automática](#samanta-automática)). |
 | `revision` | number | No | Empieza en 1 y suma 1 con cada edición. |
 | `model` | string | No | Modelo de IA (`SAMANTA_MODEL`; por defecto, `gpt-6-luna`). |
-| `promptVersion` | string | No | Versión del prompt (`samanta-drafts-v1`). |
-| `knowledgeHash` | string | No | SHA-256 (hex) de la configuración y el catálogo usados. Si cambian, el borrador queda `STALE` al editar o aprobar. |
+| `promptVersion` | string | No | Versión del prompt (`samanta-v2`; los anteriores al 8/11, `samanta-drafts-v1`). |
+| `knowledgeHash` | string | No | SHA-256 (hex) de la configuración y el catálogo usados. Si cambian, el borrador queda `STALE` al editar o aprobar. `""` mientras un automático espera en `SCHEDULED`. |
 | `originalContent` | string | Sí | Texto que dio la IA. `null` mientras está `GENERATING`, si falló, o si quedó `STALE` durante la generación por un mensaje nuevo, una pausa o el vencimiento. |
 | `content` | string | Sí | Texto actual (el editado, si se editó). Mismos casos de `null`. Nunca es `null` en `READY` ni en `APPROVED`. |
 | `intent` | `SamantaIntent` | Sí | Intención detectada. Se guarda junto con el texto de la IA: es `null` en los mismos casos que `originalContent`, aunque la IA haya respondido. |
 | `requiresHuman` | boolean | No | `true` por defecto. Toma el valor de la IA solo cuando se guarda su texto; si no, se queda en `true`. No se recalcula al editar. |
 | `missingFields` | string[] | No | Datos que faltan, en texto libre (hasta 8, de hasta 80 caracteres). `[]` mientras no se guarde el texto de la IA. |
-| `inputTokens` | number | Sí | Tokens de entrada. `null` si la IA no respondió. Si respondió, se guardan aunque el texto se descarte (`STALE` o `FAILED`). |
-| `outputTokens` | number | Sí | Tokens de salida. `null` si la IA no respondió. |
+| `inputTokens` | number | Sí | Tokens de entrada. `null` si OpenAI no cobró la llamada. Si la cobró, se guardan aunque el texto se descarte (`STALE` o `FAILED`). |
+| `outputTokens` | number | Sí | Tokens de salida. `null` si OpenAI no cobró la llamada. |
 | `errorCode` | `SamantaErrorCode` | Sí | Solo en `FAILED`. |
-| `generationExpiresAt` | `IsoDateTime` | No | Inicio + `SAMANTA_TIMEOUT_MS` + 10 s. Después, un `GENERATING` pasa a `FAILED`. |
-| `expiresAt` | `IsoDateTime` | No | Inicio + 15 min. Después, un `READY` pasa a `STALE`. |
+| `availableAt` | `IsoDateTime` | Sí | Solo en los automáticos: cuándo se responde (llegada del mensaje + `SAMANTA_AUTO_DELAY_MS`). `null` en los manuales. |
+| `generationStartedAt` | `IsoDateTime` | Sí | Cuándo se llamó a la IA. Es lo que cuenta para el límite diario. `null` si nunca llegó a generarse (un automático descartado en `SCHEDULED`). |
+| `generationExpiresAt` | `IsoDateTime` | Sí | Inicio de la generación + `SAMANTA_TIMEOUT_MS` + 10 s. Después, un `GENERATING` pasa a `FAILED`. `null` mientras un automático espera en `SCHEDULED`. |
+| `expiresAt` | `IsoDateTime` | No | Creación + 15 min. Después, un `READY` pasa a `STALE`. |
 | `reviewedAt` | `IsoDateTime` | Sí | Momento de la aprobación o el rechazo. |
 | `outboundMessageId` | `Uuid` | Sí | Mensaje creado al aprobar. Siempre presente en `APPROVED`, y solo en ese estado. |
 | `createdAt` | `IsoDateTime` | No | Creación. |
@@ -2023,12 +2142,20 @@ Reglas de los recibos de Meta:
 | `isAssistantPaused` | `false` (por defecto) o `true`, en cualquier dirección | [`PATCH /conversations/:id/assistant`](#pausar-o-reanudar-a-samanta-en-la-conversación) | ADMIN, OPERATOR | 403 `No tienes permisos para realizar esta acción` (OWNER, SUPPORT) |
 | `assignedUserId` | `null` (libre) o el id de un usuario elegible | [`PATCH /conversations/:id/assignee`](#asignar-tomar-o-liberar-una-conversación) | ADMIN: cualquier cambio. OPERATOR: tomar una libre o liberar la suya | 403 `Solo puedes tomar conversaciones libres o desasignarte de las propias`; 404 `Usuario no encontrado`; 400 `Responsable no elegible` |
 
-No hay cambios automáticos: ni los mensajes ni Samanta tocan la pausa o el responsable. Si el responsable se desactiva o pierde sus roles, sigue asignado con `isEligible: false`.
+Cambios automáticos de la pausa, solo con el [modo automático](#samanta-automática) activo:
+
+| Cuándo | Resultado |
+|---|---|
+| Un operador envía un mensaje a mano ([Enviar](#enviar-un-mensaje-de-texto)) y la conversación no estaba en pausa | `isAssistantPaused: true`, `assistantPauseReason: "OPERATOR_REPLIED"` |
+| Samanta transfiere la conversación: el cliente pide una persona, hay un reclamo o una cancelación, confirma los datos de una reserva, falla la IA o el envío, o se supera un límite | `isAssistantPaused: true`, `assistantPauseReason: "SAMANTA_HANDOFF"` |
+
+Nadie reanuda solo: para que Samanta vuelva a atender, alguien llama a `PATCH :id/assistant` con `{ "paused": false }`. Ningún cambio automático toca el responsable. Si el responsable se desactiva o pierde sus roles, sigue asignado con `isEligible: false`.
 
 ### Borradores de Samanta (`SamantaDraft.status`)
 
 | Estado | Significado | ¿Final? | Qué mostrar |
 |---|---|---|---|
+| `SCHEDULED` | Solo automáticos: Samanta responderá a partir de `availableAt`. Espera unos segundos por si el cliente sigue escribiendo. | No | «Samanta está por responder». |
 | `GENERATING` | La IA está generando. | No | Indicador de carga y polling del borrador. |
 | `READY` | Texto listo para editar, aprobar o rechazar. | No | Texto editable, `intent`, aviso de `requiresHuman`, `missingFields` y cuenta atrás hasta `expiresAt`. |
 | `APPROVED` | Aprobado: se encoló el mensaje `outboundMessageId`. | Sí | «Enviado a la cola», con el estado del mensaje `outboundMessageId`. |
@@ -2040,14 +2167,26 @@ No hay cambios automáticos: ni los mensajes ni Samanta tocan la pausa o el resp
 |---|---|---|---|
 | — | `GENERATING` | [Generar](#generar-un-borrador-con-samanta) crea el borrador antes de llamar a la IA. | ADMIN u OPERATOR (no asignado a otra persona) |
 | `GENERATING` | `READY` | La IA da un texto válido y la información comercial no cambió. | Sistema, en la misma petición |
-| `GENERATING` | `STALE` | Al terminar o al consultarlo: llegó otro mensaje, Samanta está en pausa o venció `expiresAt`. Al terminar, además, si cambió la información comercial. | Sistema |
+| `GENERATING` | `STALE` | Solo al terminar (consultarlo ya no lo cambia, para no liberar su plaza antes de tiempo): llegó otro mensaje que cuenta, Samanta está en pausa o venció `expiresAt`. Los manuales, además, si cambió la información comercial. | Sistema |
 | `GENERATING` | `FAILED` | La IA falló (`AI_*`), o se consulta o actúa después de `generationExpiresAt` (`AI_GENERATION_EXPIRED`). | Sistema |
+| — | `SCHEDULED` | Automático: el worker procesó un mensaje de texto del cliente en una conversación sin pausa. Si ya había otro `SCHEDULED` en la conversación, ese pasa a `STALE` (una sola respuesta para varios mensajes seguidos). | Sistema |
+| `SCHEDULED` | `GENERATING` | Automático: llegó `availableAt`, hay cupo y la ventana de 24 h está abierta. | Sistema |
+| `SCHEDULED` | `STALE` | Automático: llegó un mensaje más nuevo, alguien escribió, se pausó a Samanta o se apagó el canal. | Sistema |
+| `SCHEDULED` | `FAILED` | Automático: límite diario (`AUTO_DAILY_LIMIT`) o por conversación (`AUTO_CONVERSATION_LIMIT`), canal sin envío o ventana cerrada (`AUTO_CANNOT_REPLY`), contexto inválido (`AI_CONTEXT_UNAVAILABLE`) o venció (`AUTO_EXPIRED`). | Sistema |
+| `GENERATING` | `APPROVED` | Automático con envío activo: Samanta encola la respuesta, con `reviewedById` = `SAMANTA_USER_ID`. | Sistema |
+| `GENERATING` | `READY` | Automático en modo sombra (`SAMANTA_AUTO_SEND=false`): queda para revisión, igual que uno manual. | Sistema |
 | `READY` | `READY` (`revision` + 1) | [Editar](#editar-un-borrador). | ADMIN u OPERATOR (no asignado a otra persona) |
 | `READY` | `APPROVED` | [Aprobar](#aprobar-un-borrador-y-encolar-el-envío). | ADMIN u OPERATOR (no asignado a otra persona) |
 | `READY` | `REJECTED` | [Rechazar](#rechazar-un-borrador). | ADMIN u OPERATOR (no asignado a otra persona) |
-| `READY` | `STALE` | Al consultarlo o actuar: llegó otro mensaje (de cualquier dirección), Samanta está en pausa o venció `expiresAt`. Al editar o aprobar, además, si cambió la información comercial. | Sistema |
+| `READY` | `STALE` | Al consultarlo o actuar: llegó otro mensaje que cuenta (cualquier `OUTBOUND`, o un `INBOUND` que no sea `OTHER`), Samanta está en pausa o venció `expiresAt`. Las reacciones, stickers y audios (`INBOUND` `OTHER`) no lo invalidan. Al editar o aprobar, además, si cambió la información comercial. | Sistema |
 
-Los cambios del sistema no ocurren en segundo plano: se calculan y se guardan cuando alguien consulta el borrador (lista o detalle) o actúa sobre él. Mientras tanto, un borrador que todavía dice `READY` ya no se puede usar si la página 1 del historial tiene un `sequence` mayor que `baselineSequence`, si `isAssistantPaused` es `true` o si pasó `expiresAt`.
+Los borradores manuales no cambian en segundo plano: el sistema los recalcula y guarda cuando alguien los consulta (lista o detalle) o actúa sobre ellos. Mientras tanto, un borrador que todavía dice `READY` ya no se puede usar si:
+
+- en la página 1 del historial hay, con `sequence` mayor que `baselineSequence`, un `OUTBOUND` o un `INBOUND` que no sea `OTHER`;
+- `isAssistantPaused` es `true`;
+- o pasó `expiresAt`.
+
+Los automáticos (`SCHEDULED` y `GENERATING`) los avanza un proceso en segundo plano del backend.
 
 Errores de una acción no permitida:
 
@@ -2070,7 +2209,7 @@ Lo que el código no resuelve. Las respuestas dependen del equipo de backend o d
 5. **Mensaje individual:** no existe `GET /conversations/:id/messages/:messageId`, útil para seguir el `outboundMessageId` de un borrador aprobado. ¿Se necesita?
 6. **Tiempo real:** no hay WebSockets ni SSE, ni límite de peticiones en estas rutas. ¿Son aceptables para el backend los intervalos actuales de ft-crm (6 s la lista, 4 s el chat, 1,5 s con envíos pendientes y una consulta por fila para la vista previa) y los 2 o 3 s sugeridos para un borrador en `GENERATING`? ¿Se planea un canal en tiempo real?
 7. **Vista previa del último mensaje:** la lista no la incluye y ft-crm hace una llamada por fila. ¿Se agregará a `GET /conversations`?
-8. **Samanta en Messenger:** v1 responde 400 `Samanta v1 admite WhatsApp`. ¿Se habilitará para `FACEBOOK`?
+8. ~~**Samanta en Messenger:**~~ Resuelta el 8/11: Samanta atiende en `WHATSAPP`, `FACEBOOK` e `INSTAGRAM`, con borradores manuales y en modo automático.
 9. **Lecturas en Messenger:** v1 ignora los eventos `read`, así que un saliente de Messenger nunca pasa de `DELIVERED`. ¿Se procesarán?
 10. **Mensajes `UNKNOWN`:** la API no permite resolverlos (marcarlos como enviados o no enviados) ni reintentarlos. ¿Se agregará algo para eso?
 11. **Estado de las integraciones:** el frontend solo se entera de que WhatsApp, Messenger o Samanta están apagados por el 503 al intentar usarlos. ¿Se expondrá un endpoint de capacidades para ocultar esos botones de antemano?
@@ -2085,7 +2224,8 @@ Bloque autocontenido: compila con `tsc --strict` y repite los tipos compartidos 
 Qué cambia respecto de `src/lib/api/types.ts` de ft-crm:
 - `ApiErrorBody` usa la forma ampliada de [05](05-implementacion-ft-crm.md#22-typests): `code` pasa a `BffErrorCode` y se añaden `path`, `method` y `timestamp`, opcionales.
 - `Message.errorCode` pasa de `string | null` a `MessageErrorCode | null`, con los códigos que produce el backend.
-- `Message.authorUserId`: el comentario «`null` = automático (Samanta)» es incorrecto. Un `OUTBOUND` siempre tiene autor; los de Samanta llevan el de quien aprobó.
+- `Message.authorUserId`: el comentario «`null` = automático (Samanta)» es incorrecto. Un `OUTBOUND` siempre tiene autor: los que envió Samanta sola llevan `SAMANTA_USER_ID`, y los de un borrador aprobado, el de quien aprobó.
+- Son nuevos del 8/11: `SAMANTA_USER_ID`, `AssistantPauseReason`, `SamantaDraftMode`, `Conversation.assistantPauseReason`, `Conversation.assistantPausedAt`, el estado `SCHEDULED`, los códigos `AI_QUOTA_EXCEEDED`, `AI_AUTH_FAILED`, `AI_MODEL_NOT_FOUND`, `AI_CONTEXT_UNAVAILABLE` y `AUTO_*`, y los campos `mode`, `availableAt` y `generationStartedAt` de `SamantaDraft`. `generationExpiresAt` admite `null`.
 - `SendMessageRequest.content` no tiene un único tope de 4096: es 4096 en WhatsApp y 2000 en Messenger, medido con `content.length` (`OUTBOUND_TEXT_MAX_LENGTH`). `OUTBOUND_CONTENT_MAX_LENGTH` (4096) es solo el tope del DTO.
 - Son nuevos `InternalErrorResponse`, `SendableChannel`, `SENDABLE_CHANNELS`, `OUTBOUND_TEXT_MAX_LENGTH`, `RESERVED_IDEMPOTENCY_PREFIX`, `IdempotencyHeaders`, los códigos de error de los mensajes y todos los tipos de Samanta y de los webhooks. Este `SENDABLE_CHANNELS` reemplaza al de `src/lib/domain/channels.ts`, que solo incluye `WHATSAPP`.
 - `ConversationCustomer`, `ConversationAssignedUser`, `Conversation`, `MessageAttachment`, `ListConversationsQuery`, `ListMessagesQuery`, `MarkConversationReadRequest`, `MarkConversationReadResponse`, `UpdateAssistantPauseRequest` y `AssignConversationRequest` no cambian de forma.
@@ -2320,13 +2460,26 @@ export interface ConversationAssignedUser {
   isEligible: boolean;
 }
 
+/**
+ * Por qué Samanta está en pausa: MANUAL (PATCH /assistant), OPERATOR_REPLIED (un operador
+ * escribió con el modo automático activo) o SAMANTA_HANDOFF (Samanta pasó la conversación a una persona).
+ */
+export type AssistantPauseReason = "MANUAL" | "OPERATOR_REPLIED" | "SAMANTA_HANDOFF";
+
+/** Usuario de sistema que firma las respuestas automáticas de Samanta (inactivo; no aparece en GET /users). */
+export const SAMANTA_USER_ID: Uuid = "00000000-0000-4000-8000-00000000a0a1";
+
 /** Misma forma en el listado, el detalle y las respuestas de PATCH /assistant y /assignee. */
 export interface Conversation {
   id: Uuid;
   customerId: Uuid;
   channel: ContactChannel;
-  /** Samanta pausada: no se pueden generar ni usar borradores. */
+  /** Samanta pausada: no responde sola ni se pueden generar o usar borradores. */
   isAssistantPaused: boolean;
+  /** null si no está en pausa. */
+  assistantPauseReason: AssistantPauseReason | null;
+  /** Desde cuándo está en pausa; null si no lo está. */
+  assistantPausedAt: IsoDateTime | null;
   assignedUserId: Uuid | null;
   /** Última actividad: llegada de un INBOUND o encolado de un OUTBOUND. Orden de la bandeja. */
   lastMessageAt: IsoDateTime | null;
@@ -2401,13 +2554,17 @@ export interface AssignConversationRequest {
  * Borradores de Samanta
  * -------------------------------------------------------------------------- */
 
-/** APPROVED, REJECTED, STALE y FAILED son finales. */
-export type SamantaDraftStatus = "GENERATING" | "READY" | "APPROVED" | "REJECTED" | "STALE" | "FAILED";
+/** APPROVED, REJECTED, STALE y FAILED son finales. SCHEDULED solo existe en los automáticos. */
+export type SamantaDraftStatus = "SCHEDULED" | "GENERATING" | "READY" | "APPROVED" | "REJECTED" | "STALE" | "FAILED";
 
 export const SAMANTA_DRAFT_FINAL_STATUSES: readonly SamantaDraftStatus[] = ["APPROVED", "REJECTED", "STALE", "FAILED"];
 
+/** MANUAL: lo pidió una persona. AUTO: lo creó Samanta al llegar un mensaje del cliente. */
+export type SamantaDraftMode = "MANUAL" | "AUTO";
+
 /** Acciones que admite cada estado (todas exigen la `revision` actual). */
 export const SAMANTA_DRAFT_ACTIONS: Readonly<Record<SamantaDraftStatus, readonly ("edit" | "approve" | "reject")[]>> = {
+  SCHEDULED: [],
   GENERATING: [],
   READY: ["edit", "approve", "reject"],
   APPROVED: [],
@@ -2419,24 +2576,37 @@ export const SAMANTA_DRAFT_ACTIONS: Readonly<Record<SamantaDraftStatus, readonly
 /** Intención que detecta la IA. */
 export type SamantaIntent = "GENERAL" | "RESERVATION" | "CANCELLATION" | "HUMAN" | "OTHER";
 
-/** Códigos de error de un borrador FAILED. */
+/** Códigos de error de un borrador FAILED. Los AUTO_* y AI_CONTEXT_UNAVAILABLE solo aparecen en los automáticos. */
 export type SamantaErrorCode =
   | "AI_TIMEOUT"
   | "AI_RATE_LIMITED"
+  | "AI_QUOTA_EXCEEDED"
+  | "AI_AUTH_FAILED"
+  | "AI_MODEL_NOT_FOUND"
   | "AI_REQUEST_REJECTED"
   | "AI_INVALID_RESPONSE"
   | "AI_INCOMPLETE_RESPONSE"
   | "AI_REFUSED_RESPONSE"
   | "AI_RESPONSE_TOO_LARGE"
   | "AI_UNAVAILABLE"
-  | "AI_GENERATION_EXPIRED";
+  | "AI_GENERATION_EXPIRED"
+  | "AI_CONTEXT_UNAVAILABLE"
+  | "AUTO_DAILY_LIMIT"
+  | "AUTO_CONVERSATION_LIMIT"
+  | "AUTO_CANNOT_REPLY"
+  | "AUTO_SEND_REJECTED"
+  | "AUTO_EXPIRED"
+  | "AUTO_INTERNAL_ERROR";
 
 /** Máximo de content.length de un borrador (texto de la IA y texto editado). */
 export const SAMANTA_DRAFT_MAX_LENGTH = 4096;
 
 /** Body de POST /conversations/:id/assistant-drafts (+ IdempotencyHeaders). */
 export interface GenerateSamantaDraftRequest {
-  /** Id del último mensaje de la conversación: INBOUND, TEXT, no vacío, content.length ≤ 4096. */
+  /**
+   * Id del último mensaje de texto del cliente: INBOUND, TEXT, no vacío, content.length ≤ 4096.
+   * Después solo puede haber INBOUND de tipo OTHER (reacciones, stickers, audios).
+   */
   sourceMessageId: Uuid;
 }
 
@@ -2456,23 +2626,28 @@ export interface EditSamantaDraftRequest extends ReviewSamantaDraftRequest {
 export interface SamantaDraft {
   id: Uuid;
   conversationId: Uuid;
-  /** Mensaje INBOUND al que responde. */
+  /** Mensaje INBOUND de texto al que responde. */
   sourceMessageId: Uuid;
-  /** `sequence` del último mensaje al generar. Si llega otro mensaje, el borrador queda STALE. */
+  /**
+   * `sequence` de sourceMessageId. Si después llega un OUTBOUND o un INBOUND que no sea OTHER,
+   * el borrador queda STALE.
+   */
   baselineSequence: number;
-  /** Clave Idempotency-Key usada al generar. */
+  /** Clave Idempotency-Key usada al generar; "auto-<sourceMessageId>" en los automáticos. */
   idempotencyKey: string;
+  /** Quien pidió la generación; SAMANTA_USER_ID en los automáticos. */
   createdById: Uuid;
-  /** Quien aprobó o rechazó. */
+  /** Quien aprobó o rechazó; SAMANTA_USER_ID si Samanta lo envió sola. */
   reviewedById: Uuid | null;
   /** Último usuario que editó el texto. */
   editedById: Uuid | null;
   status: SamantaDraftStatus;
+  mode: SamantaDraftMode;
   /** Empieza en 1 y suma 1 con cada edición. Se envía en editar, aprobar y rechazar. */
   revision: number;
   /** Modelo de IA (SAMANTA_MODEL). */
   model: string;
-  /** Versión del prompt ("samanta-drafts-v1"). */
+  /** Versión del prompt ("samanta-v2"; los anteriores al 8/11, "samanta-drafts-v1"). */
   promptVersion: string;
   /** SHA-256 (hex) de la información comercial usada. */
   knowledgeHash: string;
@@ -2489,13 +2664,17 @@ export interface SamantaDraft {
   requiresHuman: boolean;
   /** Datos que faltan, en texto libre (máx. 8 de hasta 80 caracteres). [] si no se guardó el texto. */
   missingFields: string[];
-  /** null hasta que la IA responde. Pueden venir en STALE o FAILED si la IA respondió tarde. */
+  /** null si OpenAI no cobró la llamada. Pueden venir en STALE o FAILED: se guardan aunque el texto se descarte. */
   inputTokens: number | null;
   outputTokens: number | null;
   errorCode: SamantaErrorCode | null;
-  /** Límite de la generación (inicio + SAMANTA_TIMEOUT_MS + 10 s). Después pasa a FAILED. */
-  generationExpiresAt: IsoDateTime;
-  /** Inicio + 15 min. Después pasa a STALE. */
+  /** Automáticos: cuándo se responde (llegada + SAMANTA_AUTO_DELAY_MS). null en los manuales. */
+  availableAt: IsoDateTime | null;
+  /** Cuándo se llamó a la IA (cuenta para el límite diario). null si nunca se generó. */
+  generationStartedAt: IsoDateTime | null;
+  /** Límite de la generación (inicio + SAMANTA_TIMEOUT_MS + 10 s). Después pasa a FAILED. null en SCHEDULED. */
+  generationExpiresAt: IsoDateTime | null;
+  /** Creación + 15 min. Después pasa a STALE. */
   expiresAt: IsoDateTime;
   reviewedAt: IsoDateTime | null;
   /** Mensaje OUTBOUND creado al aprobar. */

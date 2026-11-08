@@ -89,21 +89,32 @@ integration('Fechas timestamptz: sesiones UTC y reparación de datos', () => {
         meant.getTime() + 5 * 3600000,
         0,
       );
+      // Select the column: this database stops before later migrations, so the
+      // current client's other Conversation columns may not exist yet.
       expect(
-        (await old.conversation.findUniqueOrThrow({ where: { id } }))
-          .lastMessageAt,
+        (
+          await old.conversation.findUniqueOrThrow({
+            where: { id },
+            select: { lastMessageAt: true },
+          })
+        ).lastMessageAt,
       ).toEqual(meant);
       // migrate deploy runs in the same default zone the app used to write.
       await run(OLD_ZONE, sql(FIX));
       expect(await epoch(fixed, id)).toBeCloseTo(meant.getTime(), 0);
       expect(
-        (await fixed.conversation.findUniqueOrThrow({ where: { id } }))
-          .lastMessageAt,
+        (
+          await fixed.conversation.findUniqueOrThrow({
+            where: { id },
+            select: { lastMessageAt: true },
+          })
+        ).lastMessageAt,
       ).toEqual(meant);
       const later = new Date('2026-11-03T02:00:00.000Z');
       await fixed.conversation.update({
         where: { id },
         data: { lastMessageAt: later },
+        select: { id: true },
       });
       expect(await epoch(fixed, id)).toBeCloseTo(later.getTime(), 0);
       // On a database whose default zone is UTC the migration changes nothing.

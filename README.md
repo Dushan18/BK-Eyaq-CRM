@@ -667,6 +667,34 @@ Consulta la [guía de activación y Postman de Samanta](docs/samanta-postman.md)
 Validación técnica: 444 pruebas unitarias y 201 de integración aprobadas;
 consulta el [informe de resultados y límites](docs/samanta-validation-2026-10-30.md).
 
+### Modo automático
+
+Con `SAMANTA_AUTO_ENABLED=true`, Samanta responde sola en WhatsApp, Messenger e
+Instagram (`SAMANTA_AUTO_CHANNELS`). Funciona así:
+
+1. Cuando el worker procesa un mensaje de texto del cliente, programa en la misma
+   transacción una respuesta (borrador `AUTO` en `SCHEDULED`). La espera de
+   `SAMANTA_AUTO_DELAY_MS` agrupa los mensajes seguidos en una sola respuesta.
+2. Un proceso en segundo plano revisa cada segundo las respuestas vencidas:
+   - Antes de llamar a OpenAI comprueba la pausa, la ventana de 24 h y los límites
+     (diario, simultáneo y `SAMANTA_AUTO_MAX_PER_HOUR` por conversación).
+   - Envía por la cola normal con un usuario de sistema inactivo
+     (`SAMANTA_USER_ID`), con una clave única que impide responder dos veces.
+3. Samanta pasa la conversación a una persona (pausa con motivo
+   `SAMANTA_HANDOFF`) cuando:
+   - el cliente pide hablar con alguien;
+   - hay un reclamo o una cancelación;
+   - el cliente confirma los datos de una reserva;
+   - falla OpenAI o se supera un límite.
+4. Si un operador escribe a mano en la conversación, Samanta se pausa
+   (`OPERATOR_REPLIED`).
+5. Con `SAMANTA_AUTO_SEND=false` (modo sombra) nada se envía: cada respuesta queda
+   como borrador `READY` para revisarla.
+
+Requiere `MESSAGING_ENABLED=true` y la migración `20261108000000_samanta_auto`,
+que es aditiva y crea el usuario de sistema. Samanta no confirma reservas: las
+transfiere a una persona.
+
 ## Redis local con Docker
 
 El archivo `compose.yaml` levanta únicamente Redis para las colas de mensajería, con persistencia y puerto limitado a localhost. NestJS sigue ejecutándose con `npm run start:dev`. Consulta la [guía de instalación y verificación en Windows](docs/redis-docker.md).

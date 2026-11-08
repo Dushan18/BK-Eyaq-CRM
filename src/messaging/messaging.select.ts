@@ -6,6 +6,8 @@ export const conversationSelect = {
   customerId: true,
   channel: true,
   isAssistantPaused: true,
+  assistantPauseReason: true,
+  assistantPausedAt: true,
   assignedUserId: true,
   lastMessageAt: true,
   createdAt: true,

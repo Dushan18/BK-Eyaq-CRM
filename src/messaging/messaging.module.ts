@@ -23,6 +23,7 @@ import {
   ChannelTransports,
   type ChannelTransport,
 } from './channel-transport';
+import { AssistantBridge } from './assistant-bridge';
 
 @Module({
   imports: [
@@ -49,12 +50,14 @@ import {
       inject: [WhatsAppAdapter, MessengerAdapter, InstagramAdapter],
     },
     ChannelTransports,
+    AssistantBridge,
   ],
   exports: [
     MessagesService,
     MessageStatusService,
     MessagingTransactionService,
     OutboundMessagesService,
+    AssistantBridge,
   ],
 })
 export class MessagingModule {}
