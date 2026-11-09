@@ -1061,7 +1061,7 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
   - el canal con su largo máximo de respuesta: 4096 caracteres en WhatsApp, 2000 en Messenger y 800 en Instagram, que deja margen para su tope en bytes;
   - los últimos 20 mensajes de la conversación (entrantes y salientes ya enviados), cada uno con su hora local.
 
-  No envía el teléfono ni el correo del cliente, las notas internas (del cliente, de las reservas ni las líneas `CRM: ` de las solicitudes) ni otras conversaciones. Con el prompt `samanta-v3`, Samanta no vuelve a pedir los datos de una solicitud que el cliente ya hizo: la menciona por su código y pregunta solo lo que falta o lo que quiere cambiar.
+  No envía el teléfono ni el correo del cliente, ni las notas internas (las del cliente, las de las reservas y las líneas `CRM: ` de las solicitudes), ni otras conversaciones. Con el prompt `samanta-v3`, Samanta no vuelve a pedir los datos de una solicitud que el cliente ya hizo: la menciona por su código y pregunta solo lo que falta o lo que quiere cambiar.
 - No envía nada al cliente ni crea solicitudes ni reservas.
 - Con la misma clave y los mismos datos no vuelve a llamar a la IA: devuelve el borrador que ya existe, con el estado recalculado.
 
