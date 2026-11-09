@@ -4,7 +4,7 @@
 >
 > Código revisado: bk-crm en `main` (`9538556`) y ft-crm en `main` (`aaeb85e`), los dos con sus cambios sin commit del 3/11. Las rutas de archivo de ft-crm empiezan en `ft-crm/src`.
 >
-> Revisión del 8/11: el envío por Instagram y los cambios de bk-crm del 9/11 (plantillas, `templateName`, `externalReference`) se comprobaron contra bk-crm en la rama `whatsapp-identidad` y contra ft-crm en `56519b5`, con sus cambios sin commit del 8/11, que ya responden en Instagram.
+> Revisión del 8/11: el envío por Instagram y los cambios de bk-crm del 9/11 (plantillas, `templateName`, `externalReference`) se comprobaron contra bk-crm en la rama `whatsapp-identidad` (`7c5b1c7`) y contra ft-crm en `main` (`28ba0ed`, «Despliegue_v1»), que ya responde en Instagram.
 
 Esta guía es el plan para conectar ft-crm con bk-crm en modo live (`CRM_BACKEND_MODE=live`). Reúne por pantalla lo que los módulos 01 a 04 explican por ruta, propone el código de `src/lib/api/` y lista lo que el mock hace distinto del backend real.
 
@@ -39,7 +39,7 @@ Esta guía es el plan para conectar ft-crm con bk-crm en modo live (`CRM_BACKEND
 | 1 | Aplica la capa de API: `types.ts`, `endpoints.ts`, `query-keys.ts` y el nuevo `errors.ts`. | `npm run typecheck` y `npm test` pasan, con el ajuste de `servicios-logic.test.ts`. | [§2](#2-capa-de-api) |
 | 2 | Ajusta el manejo de errores: «sin conexión» frente a «función apagada», y errores de validación por campo. | Las acciones nuevas usan `isConnectionError` e `isDisabledInServer` (no `ApiError.isUnavailable`), y los formularios llevan los 400 de validación a su campo con `serverFormErrors`. | [§4](#4-manejo-de-errores-en-la-ui) |
 | 3 | Prepara los datos del primer arranque: configuración del restaurante, catálogo aprobado y un usuario por rol. | Empresa guarda, Servicios aprueba y puedes entrar con ADMIN, OWNER y OPERATOR. | [Ajustes](#ajustes--empresa) |
-| 4 | Habilita Messenger (canal `FACEBOOK`) e Instagram (canal `INSTAGRAM`) en la Bandeja. Ya aplicado en ft-crm: Messenger en `56519b5` e Instagram el 8/11, sin commit. | Puedes responder en Messenger con tope de 2000 caracteres y en Instagram con tope de 1000 caracteres y 1000 bytes UTF-8, y los fallos `MESSENGER_*` e `INSTAGRAM_*` tienen texto. | [Bandeja](#bandeja) |
+| 4 | Habilita Messenger (canal `FACEBOOK`) e Instagram (canal `INSTAGRAM`) en la Bandeja. Ya aplicado en ft-crm: Messenger en `56519b5` e Instagram en `28ba0ed` (8/11). | Puedes responder en Messenger con tope de 2000 caracteres y en Instagram con tope de 1000 caracteres y 1000 bytes UTF-8, y los fallos `MESSENGER_*` e `INSTAGRAM_*` tienen texto. | [Bandeja](#bandeja) |
 | 5 | Añade los borradores de Samanta al chat. | Puedes generar, esperar, editar, aprobar y rechazar un borrador. | [Bandeja](#bandeja) |
 | 6 | Crea las altas y ediciones que faltan en clientes, solicitudes y reservas. | Las 11 funciones nuevas de [03](03-clientes-reservas.md#funciones-y-claves-de-caché-en-ft-crm) tienen pantalla o formulario. | [Clientes](#clientes), [Solicitudes](#solicitudes), [Calendario](#calendario) |
 | 7 | Corrige los textos del flujo del dueño, que bk-crm aún no tiene. | Ninguna pantalla promete algo que el backend no hace. | [§3](#3-guía-por-pantalla) y [§6](#6-de-mock-a-live-lista-de-comprobación) |
@@ -1263,6 +1263,7 @@ Las solicitudes y las reservas incluyen el resumen del cliente y del elemento, y
 - Los ejemplos `// ejemplo:` de las secciones 3 y 4 compilan contra esos archivos y contra `@tanstack/react-query` de ft-crm.
 - También se comprobó ft-crm completo, en memoria y sin escribir en el repo: su `tsconfig.json` y su TypeScript 5.9.3, con estos cuatro archivos en lugar de los actuales. Sin más cambios, solo fallan las líneas 116 y 137 de `servicios-logic.test.ts` (falta `id`, `createdAt` y `updatedAt` en `promotionDetail`). Con ellas completadas, compila sin errores, también tras quitar `SENDABLE_CHANNELS` de `channels.ts` y usar `isSendableChannel` en `composerState`, y con los cuatro ejemplos copiados en la ruta que indica su primera línea.
 - No se ejecutaron `next typegen` ni las pruebas. Después de aplicar los cambios, ejecuta `npm run typecheck` y `npm test`.
+- 8/11: se repitió la comprobación con los bloques actualizados (Instagram, `templateName`, `externalReference` y el bloque nuevo de `ReservationRequest`), sobre el `types.ts` de `aaeb85e`. Los cinco archivos y los cuatro ejemplos compilan con `tsc --strict`. Los ejemplos de petición de [03](03-clientes-reservas.md) y [04](04-bandeja-samanta.md) también compilan contra ellos, declarando solo las variables de contexto (`conversationId`, `draft` y `edited`). `SendableChannel`, `SENDABLE_CHANNELS`, `OUTBOUND_TEXT_MAX_LENGTH`, `OUTBOUND_TEXT_MAX_BYTES` y `OutboundMessageErrorCode` son iguales a los de ft-crm `28ba0ed`; su `Message` solo difiere en `templateName`, que aún no tiene.
 
 ## 3. Guía por pantalla
 
@@ -1396,7 +1397,7 @@ Las acciones de catálogo (`catalog.edit`) y de usuarios (`users.manage`) ya cub
 | Tomar una libre o liberar la propia | Sí (también tomar o liberar la de otra persona) | Sí | No | `conversationControls` |
 | Generar, editar, aprobar o rechazar borradores | Sí | Sí, salvo si la conversación está asignada a otra persona (403 `Conversación asignada a otro operador`) | No | `can("draft.review")` (nueva) |
 
-**Messenger e Instagram (canales `FACEBOOK` e `INSTAGRAM`).** Ya aplicado en ft-crm: Messenger desde `56519b5` e Instagram con los cambios del 8/11, sin commit. Lo que hace hoy, y lo que hay que conservar:
+**Messenger e Instagram (canales `FACEBOOK` e `INSTAGRAM`).** Ya aplicado en ft-crm: Messenger desde `56519b5` e Instagram desde `28ba0ed` (8/11). Lo que hace hoy, y lo que hay que conservar:
 - **Canal.** `composerState` usa `isSendableChannel(conversation.channel)`, con `INSTAGRAM` en `SENDABLE_CHANNELS`, y exige `customer.phone` solo en `WHATSAPP`: en Messenger e Instagram no hay teléfono, y el backend resuelve el destinatario con el PSID o el IGSID, que no se exponen. En `WEBSITE`, `PHONE`, `EMAIL` y `OTHER` el editor sigue deshabilitado.
 - **Tope.** El textarea y el contador usan `replyMaxLength` (`OUTBOUND_TEXT_MAX_LENGTH[channel]`: 4096, 2000 y 1000). En Instagram mandan los bytes: el contador muestra `bytes/1000 bytes` (`replyMaxBytes` y `utf8Length`) y, con más de 1000 bytes, avisa «Instagram admite hasta 1000 bytes por respuesta…» y no deja enviar. El editor del borrador de Samanta aplica los mismos topes y no deja aprobar un texto que no cabe.
 - **Ventana de 24 h.** `chat-panel.tsx` aplica `estimateReplyWindow` en los canales de `SENDABLE_CHANNELS`. El texto de ventana cerrada es distinto por canal (`windowClosedText`): en Messenger e Instagram hay que esperar a que el cliente escriba.

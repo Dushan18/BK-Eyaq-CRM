@@ -587,7 +587,7 @@ Comparación con el código actual de ft-crm (`src/lib/api`, `src/lib/server`, `
 El orden de trabajo completo, con criterios de «listo», está en [Orden de trabajo recomendado](05-implementacion-ft-crm.md#orden-de-trabajo-recomendado).
 
 1. **Capa de API y errores.** Faltan 25 funciones en `endpoints.ts`, sus tipos y 7 claves de caché ([Capa de API](05-implementacion-ft-crm.md#2-capa-de-api)). Además, `ApiError.isUnavailable` trata cualquier 503 como falta de conexión, también el de una función apagada en el servidor. Hoy solo el envío responde así, y `sendErrorText` ya lo separa; las acciones nuevas (Samanta y altas de solicitudes y reservas) deben usar `isConnectionError` e `isDisabledInServer` ([Manejo de errores](05-implementacion-ft-crm.md#4-manejo-de-errores-en-la-ui)).
-2. **Messenger e Instagram en la Bandeja.** Ya aplicado en ft-crm: Messenger en el commit `56519b5` e Instagram en los cambios del 8/11, sin commit. Hoy ft-crm:
+2. **Messenger e Instagram en la Bandeja.** Ya aplicado en ft-crm: Messenger en el commit `56519b5` e Instagram en `28ba0ed` (8/11). Hoy ft-crm:
    - responde en `WHATSAPP`, `FACEBOOK` e `INSTAGRAM` (`SENDABLE_CHANNELS` en `src/lib/api/types.ts`) y solo exige teléfono en WhatsApp: en Messenger e Instagram el destinatario lo resuelve el backend;
    - limita a 4096, 2000 y 1000 caracteres (`OUTBOUND_TEXT_MAX_LENGTH`) y, en Instagram, a 1000 bytes UTF-8 (`OUTBOUND_TEXT_MAX_BYTES`), con contador en bytes en el Composer y en el borrador de Samanta;
    - estima la ventana de 24 h en los tres canales y elige según el canal los textos de ventana cerrada, de destinatario y de canal apagado (`sendErrorText`, `windowClosedText` y `sendChannelName`);
@@ -686,7 +686,7 @@ Hoy funcionan, pero hacen varias llamadas por fila o calculan en el navegador. S
 
 ## Cambios del backend del 9/11/2026: reservas de la web y plantillas de WhatsApp
 
-Todavía sin commit. No hay rutas nuevas.
+En bk-crm desde el commit `7c5b1c7` («BK_Despliegue_v1», 8/11). No hay rutas nuevas.
 
 1. **Solicitudes desde la web.**
    - El backend lee el correo «Nueva reserva SM-…» que envía el formulario de la web y crea el cliente y la solicitud solo.
@@ -775,7 +775,7 @@ Esta carpeta decía que Instagram solo recibe mensajes. bk-crm responde en Insta
 | Entrega en Instagram | — | Con acceso estándar a la API, Meta solo entrega a cuentas que tienen un rol en la app de Meta. Con cualquier otra cuenta, el POST responde 202, pero el mensaje termina `FAILED` con `INSTAGRAM_SEND_REJECTED`. |
 | Samanta en Instagram: [Generar](04-bandeja-samanta.md#generar-un-borrador-con-samanta) y [Aprobar](04-bandeja-samanta.md#aprobar-un-borrador-y-encolar-el-envío) | Aprobar responde 503 `WhatsApp no está habilitado` y los 400 y 409 de WhatsApp. | Generar y aprobar hacen las comprobaciones de Instagram del envío. La IA recibe un tope de 800 caracteres en Instagram, pero no lo garantiza: aprobar un borrador de más de 1000 caracteres o 1000 bytes responde 400 y el borrador sigue `READY`. En el modo automático, ese caso termina `FAILED` con `AUTO_SEND_REJECTED`. |
 | [Editar cliente](03-clientes-reservas.md#editar-cliente) | 400 `No se puede cambiar el canal de una identidad de Messenger`. | El texto exacto es `No se puede cambiar el canal de una identidad del proveedor`, y vale para los clientes que crearon los webhooks de Messenger e Instagram. |
-| [Plan de ft-crm](05-implementacion-ft-crm.md#bandeja) | `SENDABLE_CHANNELS` sin `INSTAGRAM`; el editor de Instagram, bloqueado. | Ya aplicado en ft-crm (8/11, sin commit): `SENDABLE_CHANNELS` incluye `INSTAGRAM`, `OUTBOUND_TEXT_MAX_BYTES = { INSTAGRAM: 1000 }`, contador en bytes en el Composer y en el borrador, textos de Instagram, y el panel de Samanta en WhatsApp, Messenger e Instagram. |
+| [Plan de ft-crm](05-implementacion-ft-crm.md#bandeja) | `SENDABLE_CHANNELS` sin `INSTAGRAM`; el editor de Instagram, bloqueado. | Ya aplicado en ft-crm (commit `28ba0ed`, 8/11): `SENDABLE_CHANNELS` incluye `INSTAGRAM`, `OUTBOUND_TEXT_MAX_BYTES = { INSTAGRAM: 1000 }`, contador en bytes en el Composer y en el borrador, textos de Instagram, y el panel de Samanta en WhatsApp, Messenger e Instagram. |
 
 **Sesión, BFF y errores**
 

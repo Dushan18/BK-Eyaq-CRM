@@ -498,7 +498,7 @@ Ninguno (solo lectura). Ver el historial no marca nada como leído: para eso est
   | `UNKNOWN` | OUTBOUND | «Estado incierto: verifica antes de reenviar». Meta pudo recibirlo y el backend nunca lo reenvía. |
   | `FAILED` | OUTBOUND | «No enviado» o «No entregado», según `errorCode`. |
 
-- Los textos de fallo de ft-crm (`outboundErrorKind` y `OUTBOUND_ERROR_TEXT` en `channel-utils.ts`, que usa `outboundStatusView`) ya reconocen los tres prefijos, `WHATSAPP_*`, `MESSENGER_*` e `INSTAGRAM_*`, y el código nuevo `WHATSAPP_TEMPLATE_EXPIRED` (cambio del 8/11, sin commit).
+- Los textos de fallo de ft-crm (`outboundErrorKind` y `OUTBOUND_ERROR_TEXT` en `channel-utils.ts`, que usa `outboundStatusView`) ya reconocen los tres prefijos, `WHATSAPP_*`, `MESSENGER_*` e `INSTAGRAM_*`, y el código nuevo `WHATSAPP_TEMPLATE_EXPIRED` (ft-crm `28ba0ed`, del 8/11).
 - **Diagnóstico:** ante un `FAILED` o `UNKNOWN` que no se entiende, pasa el `id` del mensaje al equipo de backend. Cada vez que Meta responde al envío con un error HTTP (4xx, 429 o 5xx), el log `WHATSAPP_SEND_HTTP_ERROR`, `MESSENGER_SEND_HTTP_ERROR` o `INSTAGRAM_SEND_HTTP_ERROR` lo registra con ese id, el estado HTTP y los códigos numéricos de Meta. Un timeout o un error de red no deja esa línea.
 - `externalMessageId` es el id de Meta (wamid en WhatsApp; mid en Messenger e Instagram). En un `OUTBOUND` aparece al llegar a `SENT`.
 
@@ -633,7 +633,7 @@ Idempotency-Key: 3b9d6c1e-2f4a-4c8e-9b1d-5a7c9e2f4b6d
   - Deshabilita el editor 24 h después del `occurredAt` del último `INBOUND` cargado. ft-crm ya lo estima (`estimateReplyWindow`) en los canales de `SENDABLE_CHANNELS`, que desde el 8/11 incluye `INSTAGRAM`. El 409 del backend es la respuesta definitiva.
 - **Canales:** `WHATSAPP`, `FACEBOOK` e `INSTAGRAM` tienen envío; `WEBSITE`, `PHONE`, `EMAIL` y `OTHER` no (400 `Conversación sin destinatario habilitado`).
   - En Messenger e Instagram no hay teléfono: el backend resuelve el destinatario (PSID o IGSID), que no se expone. El Composer solo debe exigir `customer.phone` en WhatsApp.
-  - ft-crm ya lo hace: `SENDABLE_CHANNELS` (`src/lib/api/types.ts`) incluye `INSTAGRAM` y `composerState` ya no bloquea Instagram (cambio del 8/11, sin commit).
+  - ft-crm ya lo hace: `SENDABLE_CHANNELS` (`src/lib/api/types.ts`) incluye `INSTAGRAM` y `composerState` ya no bloquea Instagram (ft-crm `28ba0ed`, del 8/11).
   - Con acceso estándar a la API de Meta, Instagram solo entrega a cuentas que tienen un rol en la app de Meta. A cualquier otra cuenta, el POST responde 202, pero el mensaje termina `FAILED` con `INSTAGRAM_SEND_REJECTED`.
 - **Asignación:** el backend deja responder a cualquier ADMIN u OPERATOR aunque la conversación sea de otra persona. ft-crm bloquea al OPERATOR en ese caso (`composerState`): es una regla de la interfaz, no del backend.
 - **Textos de error:** elige los textos según `conversation.channel`. ft-crm ya lo hace: `sendErrorText`, `sendChannelName` y `windowClosedText` tienen caso de Instagram desde el 8/11. En Instagram, el backend responde:
@@ -2259,7 +2259,7 @@ Qué cambia respecto de `src/lib/api/types.ts` de ft-crm:
 - Son nuevos del 8/11: `SAMANTA_USER_ID`, `AssistantPauseReason`, `SamantaDraftMode`, `Conversation.assistantPauseReason`, `Conversation.assistantPausedAt`, el estado `SCHEDULED`, los códigos `AI_QUOTA_EXCEEDED`, `AI_AUTH_FAILED`, `AI_MODEL_NOT_FOUND`, `AI_CONTEXT_UNAVAILABLE` y `AUTO_*`, y los campos `mode`, `availableAt` y `generationStartedAt` de `SamantaDraft`. `generationExpiresAt` admite `null`.
 - Son nuevos del 9/11: `Message.templateName`, el código `WHATSAPP_TEMPLATE_EXPIRED` y los campos `button` e `interactive` de `WhatsAppWebhookPayload`.
 - `SendMessageRequest.content` no tiene un único tope de 4096: es 4096 en WhatsApp, 2000 en Messenger y 1000 en Instagram, medido con `content.length` (`OUTBOUND_TEXT_MAX_LENGTH`). Instagram exige además ≤ 1000 bytes UTF-8 (`OUTBOUND_TEXT_MAX_BYTES`). `OUTBOUND_CONTENT_MAX_LENGTH` (4096) es solo el tope del DTO.
-- Son nuevos `InternalErrorResponse`, `SendableChannel`, `SENDABLE_CHANNELS`, `OUTBOUND_TEXT_MAX_LENGTH`, `OUTBOUND_TEXT_MAX_BYTES`, `RESERVED_IDEMPOTENCY_PREFIX`, `IdempotencyHeaders`, los códigos de error de los mensajes y todos los tipos de Samanta y de los webhooks. `SENDABLE_CHANNELS` incluye `WHATSAPP`, `FACEBOOK` e `INSTAGRAM`. El ft-crm actual ya tiene los de envío: su `SENDABLE_CHANNELS` (`src/lib/api/types.ts`) incluye `INSTAGRAM` y tiene `OUTBOUND_TEXT_MAX_BYTES` desde el 8/11, sin commit.
+- Son nuevos `InternalErrorResponse`, `SendableChannel`, `SENDABLE_CHANNELS`, `OUTBOUND_TEXT_MAX_LENGTH`, `OUTBOUND_TEXT_MAX_BYTES`, `RESERVED_IDEMPOTENCY_PREFIX`, `IdempotencyHeaders`, los códigos de error de los mensajes y todos los tipos de Samanta y de los webhooks. `SENDABLE_CHANNELS` incluye `WHATSAPP`, `FACEBOOK` e `INSTAGRAM`. El ft-crm actual ya tiene los de envío: su `SENDABLE_CHANNELS` (`src/lib/api/types.ts`) incluye `INSTAGRAM` y tiene `OUTBOUND_TEXT_MAX_BYTES` desde el commit `28ba0ed` (8/11).
 - `ConversationCustomer`, `ConversationAssignedUser`, `Conversation`, `MessageAttachment`, `ListConversationsQuery`, `ListMessagesQuery`, `MarkConversationReadRequest`, `MarkConversationReadResponse`, `UpdateAssistantPauseRequest` y `AssignConversationRequest` no cambian de forma.
 
 ```ts
