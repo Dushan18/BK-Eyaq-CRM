@@ -167,6 +167,12 @@ model Message {
   deliveredAt        DateTime?           @db.Timestamptz(3)
   providerReadAt     DateTime?           @db.Timestamptz(3)
   idempotencyKey     String?             @db.VarChar(80)
+  // WhatsApp template: the only way to write first or outside the 24-hour window.
+  // `content` keeps the CRM's rendering of it for the history.
+  templateName       String?             @db.VarChar(512)
+  templateLanguage   String?             @db.VarChar(15)
+  templateParameters String[]            @default([])
+  inboundEmail       InboundEmail?       @relation("InboundEmailWhatsApp")
   recipientPhone     String?             @db.VarChar(16)
   providerAccountId  String?             @db.VarChar(80)
   processingAttempts Int                 @default(0)
@@ -205,6 +211,59 @@ model MessageStatusEvent {
   @@unique([channel, providerAccountId, externalMessageId, status, occurredAt], map: "message_status_events_dedup_key")
   @@index([processedAt, availableAt])
   @@map("message_status_events")
+}
+
+enum InboundEmailKind {
+  WEB_RESERVATION
+}
+
+enum InboundEmailStatus {
+  IMPORTED
+  SKIPPED
+  FAILED
+}
+
+// Emails read from the restaurant mailbox over IMAP, read-only. For now only the website's
+// reservation notifications are stored: their outcome and references, never the raw email.
+model InboundEmail {
+  id                   String              @id @default(uuid())
+  mailbox              String              @db.VarChar(320)
+  uidValidity          BigInt
+  uid                  BigInt
+  messageId            String?             @db.VarChar(998)
+  fromAddress          String?             @db.VarChar(320)
+  subject              String?             @db.VarChar(998)
+  sentAt               DateTime?           @db.Timestamptz(3)
+  // IMAP INTERNALDATE: when the mail server received it.
+  receivedAt           DateTime?           @db.Timestamptz(3)
+  kind                 InboundEmailKind
+  status               InboundEmailStatus
+  errorCode            String?             @db.VarChar(80)
+  externalReference    String?             @db.VarChar(40)
+  customerId           String?
+  reservationRequestId String?
+  whatsappMessageId    String?             @unique
+  // Why the customer was not contacted by WhatsApp, when the import itself succeeded.
+  contactError         String?             @db.VarChar(80)
+  createdAt            DateTime            @default(now()) @db.Timestamptz(3)
+  customer             Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  reservationRequest   ReservationRequest? @relation(fields: [reservationRequestId], references: [id], onDelete: Restrict)
+  whatsappMessage      Message?            @relation("InboundEmailWhatsApp", fields: [whatsappMessageId], references: [id], onDelete: Restrict)
+
+  @@unique([mailbox, uidValidity, uid])
+  @@index([externalReference])
+  @@index([createdAt])
+  @@map("inbound_emails")
+}
+
+// Last UID imported per mailbox. A new UIDVALIDITY restarts the sync from a date.
+model MailboxCursor {
+  mailbox     String   @id @db.VarChar(320)
+  uidValidity BigInt
+  lastUid     BigInt
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("mailbox_cursors")
 }
 
 // Quarantine fingerprint for authenticated but malformed events; no content/PII.
@@ -627,6 +686,7 @@ model Customer {
   conversations       Conversation[]
   reservationRequests ReservationRequest[]
   reservations        Reservation[]
+  inboundEmails       InboundEmail[]
   id                  String               @id @default(uuid())
   firstName           String?              @db.VarChar(100)
   lastName            String?              @db.VarChar(100)
@@ -692,6 +752,8 @@ enum ReservationStatus {
 model ReservationRequest {
   id                  String                   @id @default(uuid())
   code                String                   @unique @db.VarChar(40)
+  // Code given by the source outside the CRM, e.g. the website's "SM-20261029-B65A25".
+  externalReference   String?                  @unique @db.VarChar(40)
   customerId          String
   commercialItemId    String?
   sourceChannel       ContactChannel
@@ -707,6 +769,7 @@ model ReservationRequest {
   customer            Customer                 @relation(fields: [customerId], references: [id], onDelete: Restrict)
   commercialItem      CommercialItem?          @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
   reservation         Reservation?
+  inboundEmails       InboundEmail[]
 
   @@index([createdAt, id])
   @@index([status, createdAt])

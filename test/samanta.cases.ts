@@ -734,6 +734,56 @@ export function registerSamantaTests(c: Context) {
         expect(samantaTestProvider.generate).not.toHaveBeenCalled();
         expect((await drafts(row))[0].status).toBe('STALE');
       });
+      it('al devolverle la conversación, responde el mensaje que llegó durante la pausa', async () => {
+        const row = await say();
+        const path = `/conversations/${row.conversationId}/assistant`;
+        await request(c.server())
+          .patch(path)
+          .set('Authorization', c.auth())
+          .send({ paused: true })
+          .expect(200);
+        const waiting = await say(row.phone, 'Reserva para 4 personas');
+        expect(
+          (await drafts(row)).filter(
+            (draft) => draft.sourceMessageId === waiting.messageId,
+          ),
+        ).toHaveLength(0);
+        await request(c.server())
+          .patch(path)
+          .set('Authorization', c.auth())
+          .send({ paused: false })
+          .expect(200);
+        expect(
+          (await drafts(row)).filter((draft) => draft.status === 'SCHEDULED'),
+        ).toMatchObject([{ sourceMessageId: waiting.messageId, mode: 'AUTO' }]);
+        await due(row);
+        expect(samantaTestProvider.generate).toHaveBeenCalledTimes(1);
+        expect((await sent(row)).map((message) => message.content)).toEqual([
+          reply.content,
+        ]);
+      });
+      it('al devolverle una conversación ya respondida por una persona, no escribe', async () => {
+        const row = await say();
+        await request(c.server())
+          .post(`/conversations/${row.conversationId}/messages`)
+          .set('Authorization', c.auth(RoleCode.OPERATOR))
+          .set('Idempotency-Key', randomUUID())
+          .send({ type: 'TEXT', content: 'Hola, te atiende Ana.' })
+          .expect(202);
+        await request(c.server())
+          .patch(`/conversations/${row.conversationId}/assistant`)
+          .set('Authorization', c.auth())
+          .send({ paused: false })
+          .expect(200);
+        // Resuming schedules nothing new: the pending reply was answered by a person.
+        expect(
+          (await drafts(row)).filter((draft) =>
+            draft.idempotencyKey.includes('-r'),
+          ),
+        ).toHaveLength(0);
+        await due(row);
+        expect(samantaTestProvider.generate).not.toHaveBeenCalled();
+      });
       it('sin modo automático, escribir no pausa a Samanta', async () => {
         jest.replaceProperty(samantaTestConfig, 'autoEnabled', false);
         const row = await say();

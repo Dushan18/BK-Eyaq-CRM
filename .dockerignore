@@ -1,0 +1,14 @@
+node_modules
+dist
+generated
+coverage
+tmp
+test
+test-results
+docs
+.git
+.env
+.env.*
+!.env.example
+*.log
+compose.yaml

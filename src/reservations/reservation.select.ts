@@ -35,6 +35,8 @@ const commercialItem = {
 export const reservationRequestSelect = {
   id: true,
   code: true,
+  // The source's own code, e.g. the website's "SM-20261029-B65A25"; null otherwise.
+  externalReference: true,
   customerId: true,
   commercialItemId: true,
   sourceChannel: true,

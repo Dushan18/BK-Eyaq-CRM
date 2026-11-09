@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import type { Prisma } from '../../generated/prisma/client';
 import { RoleCode } from '../../generated/prisma/enums';
@@ -22,6 +23,7 @@ import {
   messageSelect,
 } from './messaging.select';
 import { MessagingTransactionService } from './messaging-transaction.service';
+import { AssistantBridge } from './assistant-bridge';
 
 const pagination = (page: number, limit: number, total: number) => ({
   page,
@@ -34,6 +36,7 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly transactions: MessagingTransactionService,
+    @Optional() private readonly assistantBridge?: AssistantBridge,
   ) {}
   async findAll(query: ConversationQueryDto) {
     const digits = query.search?.replace(/\D/g, '');
@@ -135,7 +138,7 @@ export class ConversationsService {
   }
   async assistant(id: string, dto: UpdateAssistantPauseDto) {
     return this.transactions.run(async (tx) => {
-      await this.requireConversation(tx, id);
+      const current = await this.requireConversation(tx, id);
       const row = await tx.conversation.update({
         where: { id },
         data: {
@@ -145,6 +148,9 @@ export class ConversationsService {
         },
         select: conversationSelect,
       });
+      // Back to Samanta: a customer message that arrived during the pause gets her reply.
+      if (current.isAssistantPaused && !dto.paused)
+        await this.assistantBridge?.handler?.assistantResumed(tx, id);
       // TODO: ASSISTANT_PAUSED / ASSISTANT_RESUMED audit.
       return conversationResponse(row);
     });
@@ -197,7 +203,7 @@ export class ConversationsService {
   private async requireConversation(tx: Prisma.TransactionClient, id: string) {
     const row = await tx.conversation.findUnique({
       where: { id },
-      select: { id: true, assignedUserId: true },
+      select: { id: true, assignedUserId: true, isAssistantPaused: true },
     });
     if (!row) throw new NotFoundException('Conversación no encontrada');
     return row;

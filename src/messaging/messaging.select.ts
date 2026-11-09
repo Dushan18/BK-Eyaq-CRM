@@ -67,6 +67,8 @@ export const messageSelect = {
   status: true,
   type: true,
   content: true,
+  // Name of the WhatsApp template when the message was one; null otherwise.
+  templateName: true,
   authorUserId: true,
   occurredAt: true,
   receivedAt: true,

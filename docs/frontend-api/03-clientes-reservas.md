@@ -41,6 +41,7 @@ Rutas:
 - [Asignar o liberar responsable](#asignar-o-liberar-responsable) — `PATCH /reservations/:id/assignee`
 - [Agregar observación a la reserva](#agregar-observación-a-la-reserva) — `POST /reservations/:id/notes`
 - [Reprogramar reserva](#reprogramar-reserva) — `PATCH /reservations/:id/reschedule`
+- [Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web) — sin rutas nuevas: el backend las crea desde el correo
 
 ## Convenciones del módulo
 
@@ -288,7 +289,7 @@ Orden: validación del body → reglas de contacto (en el orden de la tabla) →
 
 - Crea el cliente con `status: "NEW"` y `firstContactAt` igual a `lastContactAt`, con la hora del servidor.
 - No crea conversación. Si el teléfono quedó normalizado, los mensajes de WhatsApp de ese número se asocian a este cliente en vez de crear otro, y su conversación aparece en la Bandeja con el primer mensaje.
-- Un cliente creado a mano con `sourceChannel: "FACEBOOK"` no queda vinculado a Messenger: si esa persona escribe por Messenger, el backend crea otro cliente.
+- Un cliente creado a mano con `sourceChannel: "FACEBOOK"` o `"INSTAGRAM"` no queda vinculado a Messenger ni a Instagram: si esa persona escribe por ese canal, el backend crea otro cliente.
 - No envía mensajes ni correos.
 
 **Notas para el frontend**
@@ -414,9 +415,11 @@ Ninguno (solo lectura).
 - No envíes parámetros vacíos ni extra. `toSearch` ya omite `undefined`, `null` y los textos vacíos.
 - Clientes creados por los webhooks:
   - Messenger (`sourceChannel: "FACEBOOK"`): sin `phone` ni `email`. `firstName` trae el nombre completo que da Meta (p. ej. «Rosa Mamani») y `lastName` queda en `null`. Si Meta no da el nombre, ambos quedan en `null`.
+  - Instagram (`sourceChannel: "INSTAGRAM"`): igual que Messenger. `firstName` trae el nombre del perfil o, si no tiene, el usuario con arroba (`"@ana.q"`).
   - WhatsApp: `phone` con el formato `"+51912345678"` y sin nombre.
-  - Texto de respaldo: el teléfono, el email o «Cliente de Messenger». Hoy `customerName` muestra «Cliente sin nombre» cuando no hay nada.
-- `lastContactAt` cambia con cada mensaje entrante (WhatsApp o Messenger) y al registrar un interés. No cambia al editar el cliente, al cambiar su estado ni al enviarle mensajes.
+  - Texto de respaldo: el teléfono, el email, «Cliente de Messenger» o «Cliente de Instagram». ft-crm ya lo hace (`customerName` y `customerIdentity`).
+- Clientes creados por las reservas de la web (desde el 9/11): `sourceChannel: "WEBSITE"`, el nombre del formulario y su WhatsApp o su correo ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)).
+- `lastContactAt` cambia con cada mensaje entrante (WhatsApp, Messenger o Instagram), con cada reserva de la web (la hora en que llegó el correo) y al registrar un interés. No cambia al editar el cliente, al cambiar su estado ni al enviarle mensajes.
 - El listado no trae reservas, intereses ni conversación. ft-crm hace una llamada por fila para las columnas RESERVAS y CONSULTÓ.
 - `ClientesView` refresca cada 60 s y solo consulta si el rol puede ver Clientes.
 
@@ -529,7 +532,7 @@ Ninguno (solo lectura).
 
 | Campo | Tipo | Obligatorio | Reglas |
 |---|---|---|---|
-| `sourceChannel` | `ContactChannel` | No | Valor del enum; no admite `null`. En una identidad de Messenger solo se acepta `FACEBOOK`. |
+| `sourceChannel` | `ContactChannel` | No | Valor del enum; no admite `null`. En una identidad del proveedor solo se acepta su canal: `FACEBOOK` (Messenger) o `INSTAGRAM`. |
 | `firstName` | string \| null | No | Trim; de 1 a 100 caracteres. `null` lo borra. |
 | `lastName` | string \| null | No | Trim; de 1 a 100 caracteres. `null` lo borra. |
 | `phone` | string \| null | No | Mismas reglas que al crear. `null` borra el teléfono y también su país. |
@@ -539,7 +542,7 @@ Ninguno (solo lectura).
 
 Reglas del servicio:
 - Hay que enviar al menos un campo; `null` cuenta como campo.
-- El contacto se valida con el resultado final: tras el cambio, el cliente tiene que conservar un email o un teléfono normalizable. Las identidades de Messenger están exentas.
+- El contacto se valida con el resultado final: tras el cambio, el cliente tiene que conservar un email o un teléfono normalizable. Las identidades de Messenger e Instagram están exentas.
 - El teléfono y el email no pueden ser de otro cliente.
 - `status`, las fechas de contacto, los campos normalizados y cualquier otro campo responden 400.
 
@@ -596,12 +599,12 @@ Para cambiar un teléfono nacional, reenvía siempre el país: `{ "phone": "912 
 | 400 | `phoneCountry must be a string` · `phoneCountry must match /^[A-Z]{2}$/ regular expression` | No son dos letras. |
 | 400 | `email must be an email` · `email must be shorter than or equal to 320 characters` | Formato inválido o más de 320. |
 | 400 | `notes must be a string` · `notes should not be empty` · `notes must be shorter than or equal to 5000 characters` | No es texto, queda vacío o pasa de 5000. |
-| 400 | `No se puede cambiar el canal de una identidad de Messenger` | El cliente lo creó el webhook de Messenger y llega un `sourceChannel` distinto de `FACEBOOK`. |
+| 400 | `No se puede cambiar el canal de una identidad del proveedor` | El cliente lo creó el webhook de Messenger o el de Instagram y llega un `sourceChannel` distinto del suyo (`FACEBOOK` o `INSTAGRAM`). |
 | 400 | `phoneCountry debe ser un país ISO válido` | Dos letras que no son un país soportado. |
-| 400 | `phoneCountry requiere un teléfono` | Llega `phoneCountry` para un cliente sin teléfono, o un `phoneCountry` no nulo junto con `phone: null`. En este último caso, si el cliente quedaría sin email (y no es de Messenger), responde antes el error de contacto. |
+| 400 | `phoneCountry requiere un teléfono` | Llega `phoneCountry` para un cliente sin teléfono, o un `phoneCountry` no nulo junto con `phone: null`. En este último caso, si el cliente quedaría sin email (y no es de Messenger ni de Instagram), responde antes el error de contacto. |
 | 400 | `El teléfono tiene un formato inválido` | Caracteres no permitidos, menos de 6 dígitos o más de 15. |
 | 400 | `El teléfono no es válido para el país indicado` | El número no es válido (con `+`) o no es válido para el país. |
-| 400 | `Proporciona un email válido o un teléfono internacional; para un número nacional indica phoneCountry` | Tras el cambio, el cliente quedaría sin email y sin teléfono normalizable (p. ej. `{ "email": null }` en un cliente sin teléfono, o un número nacional sin `phoneCountry`). No aplica a las identidades de Messenger. |
+| 400 | `Proporciona un email válido o un teléfono internacional; para un número nacional indica phoneCountry` | Tras el cambio, el cliente quedaría sin email y sin teléfono normalizable (p. ej. `{ "email": null }` en un cliente sin teléfono, o un número nacional sin `phoneCountry`). No aplica a las identidades de Messenger ni de Instagram. |
 | 400 | `Los campos de texto no pueden estar vacíos` · `El correo no es válido` · `Los datos o referencias del cliente son inválidos` | Defensivos. |
 | 401 | `Tu sesión terminó. Vuelve a iniciar sesión.` · `Inicia sesión para continuar.` | Los responde el BFF. Ver [Convenciones del módulo](#errores-que-ves-desde-el-navegador). |
 | 403 | `No tienes permisos para realizar esta acción` | El usuario no tiene ADMIN ni OPERATOR (p. ej. solo OWNER o SUPPORT). |
@@ -612,7 +615,7 @@ Para cambiar un teléfono nacional, reenvía siempre el país: `{ "phone": "912 
 | 409 | `Conflicto concurrente; vuelve a intentarlo` | La transacción siguió en conflicto tras 3 intentos. |
 | 413 | `El cuerpo de la petición supera el tamaño máximo permitido` | El body pasa de 100 kb. |
 
-Orden: `:id` y validación del body → body vacío → cliente (404) → canal de Messenger → reglas de contacto → `phoneCountry` con `phone: null` → duplicados (409).
+Orden: `:id` y validación del body → body vacío → cliente (404) → canal de la identidad del proveedor → reglas de contacto → `phoneCountry` con `phone: null` → duplicados (409).
 
 **Efectos**
 
@@ -622,15 +625,15 @@ Orden: `:id` y validación del body → body vacío → cliente (404) → canal 
   - Borrar el teléfono, o dejar un número nacional sin `phoneCountry`, hace que `POST /conversations/:id/messages` responda 400 `Conversación sin destinatario habilitado`.
   - Cambiar el número hace que las respuestas vayan al número nuevo. La ventana queda cerrada (409 `Ventana de WhatsApp cerrada; se requiere una plantilla aprobada`) hasta que ese número escriba.
   - Si el número anterior vuelve a escribir, el backend crea otro cliente con ese número.
-- **Messenger.** Las respuestas van al identificador de Messenger, que no se edita: cambiar el teléfono o el email no las afecta. El nombre automático solo se aplica a clientes con `firstName` y `lastName` en `null`: si les pones un nombre, se respeta; si borras ambos, el siguiente mensaje de Messenger puede volver a llenar `firstName`.
+- **Messenger e Instagram.** Las respuestas van al identificador del cliente en la página (PSID) o en la cuenta de Instagram (IGSID), que no se edita: cambiar el teléfono o el email no las afecta. El nombre automático solo se aplica a clientes con `firstName` y `lastName` en `null`: si les pones un nombre, se respeta; si borras ambos, el siguiente mensaje de Messenger o Instagram puede volver a llenar `firstName`.
 
 **Notas para el frontend**
 
 - Envía solo los campos modificados. Omitir conserva; `null` borra (salvo `sourceChannel`).
 - Teléfono nacional: cada vez que envíes `phone`, reenvía `phoneCountry` aunque no haya cambiado. Si no lo haces, el país se borra y el número deja de estar normalizado; si además el cliente no tiene email, la respuesta es 400.
 - Si el cliente tiene conversación de WhatsApp, avisa antes de cambiar o borrar su teléfono (ver Efectos).
-- Identidad de Messenger: la respuesta no indica si un cliente `FACEBOOK` la tiene, así que no puedes saber de antemano si el canal está bloqueado ([pregunta abierta](#preguntas-abiertas)). Si llega el 400 `No se puede cambiar el canal de una identidad de Messenger`, muestra el mensaje y devuelve el selector a `FACEBOOK`. Esas identidades sí admiten agregar o borrar teléfono y email.
-- Un cliente creado a mano con `FACEBOOK` no es una identidad de Messenger: le aplica la regla de contacto normal y puede cambiar de canal.
+- Identidad del proveedor: la respuesta no indica si un cliente `FACEBOOK` o `INSTAGRAM` la tiene, así que no puedes saber de antemano si el canal está bloqueado ([pregunta abierta](#preguntas-abiertas)). Si llega el 400 `No se puede cambiar el canal de una identidad del proveedor`, muestra el mensaje y devuelve el selector al canal anterior (`FACEBOOK` o `INSTAGRAM`). Esas identidades sí admiten agregar o borrar teléfono y email.
+- Un cliente creado a mano con `FACEBOOK` o `INSTAGRAM` no es una identidad del proveedor: le aplica la regla de contacto normal, puede cambiar de canal y no tiene conversación a la que responder.
 - No hay fusión: si el teléfono o el email ya son de otro cliente, la respuesta es 409. Ofrece abrir ese cliente.
 - Para actualizar la caché sin perder los intereses: `setQueryData<CustomerDetail>(qk.customer(id), (old) => (old ? { ...old, ...updated } : old))`.
 
@@ -988,7 +991,7 @@ Orden: configuración (409) → cliente (404) → elemento (404 o 400) → fecha
 
 **Notas para el frontend**
 
-- Es la única forma de crear solicitudes: ni Samanta ni los webhooks las crean. ft-crm aún no tiene el formulario «Nueva solicitud», y el panel de la Bandeja dice que «Samanta la crea…», lo que no ocurre en modo live.
+- Además de esta ruta, desde el 9/11 el backend crea solicitudes con las reservas que llegan de la web por correo ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). Samanta no las crea. ft-crm aún no tiene el formulario «Nueva solicitud».
 - Arma `reservationAt` con la fecha y la hora que elige la persona en la zona del restaurante y conviértelo a un instante. `toISOString()` sirve.
 - Envía `quotedPrice` como texto. Para el selector de moneda, propone por defecto el `currency` de `GET /restaurant-config`.
 - En el selector de elementos, ofrece solo los activos y aprobados: `catalogApi.items({ isActive: true, approvalStatus: "APPROVED" })`.
@@ -1132,7 +1135,7 @@ Ninguno (solo lectura).
 - Con el backend actual solo se alcanzan `INCOMPLETE_DATA`, `READY_TO_SEND` y `CANCELLED`. Los KPI y las pestañas Esperando, Aceptadas y Rechazadas siempre darán 0 (ver [Estados y transiciones](#estados-y-transiciones)).
 - Para un conteo barato usa `limit: 1` y lee `pagination.total`.
 - Las filas y el total se leen en paralelo, fuera de una transacción: con escrituras simultáneas, el total puede no coincidir un momento con las filas.
-- `customer` es un resumen. Un cliente de Messenger no trae `phone` ni `email` salvo que se los hayan agregado en el CRM, y puede traer `firstName` en `null` si Meta no dio el nombre.
+- `customer` es un resumen. Un cliente de Messenger o Instagram no trae `phone` ni `email` salvo que se los hayan agregado en el CRM, y puede traer `firstName` en `null` si Meta no dio el nombre.
 
 ## Ver detalle de solicitud de reserva
 `GET /reservation-requests/:id`
@@ -2409,6 +2412,67 @@ Orden: reserva (404) → estado (409) → fecha futura (400) → mismo instante 
 - Para volver a `CONFIRMED` después de reprogramar, usa `PATCH /reservations/:id/status`.
 - La reserva puede salir del periodo visible: refresca el calendario. El panel de detalle de ft-crm la sigue mostrando porque la carga por id.
 
+## Solicitudes que llegan de la web
+
+No hay rutas nuevas: el backend lee el buzón del restaurante y crea las solicitudes solo. Lo que cambia para el frontend:
+
+- **Origen:** el formulario de la web envía un correo «Nueva reserva SM-…». Con `EMAIL_ENABLED=true`, bk-crm lee el buzón cada `EMAIL_POLL_SECONDS` (60 s por defecto). Si el aviso viene del remitente de la web, crea o reconoce al cliente y crea la solicitud.
+- **Cliente.** El formulario no es una prueba de identidad: nunca agrega un teléfono, un correo ni un nombre a un cliente que ya existe.
+  - Se reconoce por el WhatsApp del formulario. Un número nacional («987 654 321») se lee con el «País» del formulario («Perú», «Peru», «Francia»…); uno que empieza con `+` o `00` se lee tal cual.
+  - Si el formulario no trae un WhatsApp válido, se reconoce por el correo.
+  - Si no existe, se crea con `sourceChannel: "WEBSITE"`, `status: "REQUESTED_RESERVATION"`, el nombre del formulario en `firstName` (sin números ni símbolos, hasta 6 palabras), el WhatsApp y el correo. Si ese correo ya es de otro cliente, el nuevo se crea solo con el WhatsApp, y el correo queda en una nota.
+  - A un cliente existente solo le actualiza `lastContactAt` y lo pasa a `REQUESTED_RESERVATION` si estaba en `NEW`, `INTERESTED` o `IN_CONVERSATION`.
+  - Sin un WhatsApp ni un correo válidos no se crea nada.
+- **Solicitud:** `sourceChannel: "WEBSITE"` y `externalReference` = el código de la web (`SM-…`), con:
+  - la fecha y la hora del formulario, en la zona del restaurante;
+  - las personas;
+  - la «Preferencia» en `specialRequirements`;
+  - en `comments`, una línea por dato: el «Mensaje», `País: …`, los valores que no se entendieron y las notas del CRM.
+
+  Queda en `READY_TO_SEND` si trae fecha, hora y personas; si no, en `INCOMPLETE_DATA`. Una fecha, una hora o una cantidad de personas que no se entiende («Fecha: el sábado», «Personas: 2-3») se copia tal cual en `comments` y ese dato queda vacío: la solicitud sigue incompleta hasta que alguien la edite.
+- **Notas del CRM.** Lo que el equipo debe saber y no cabe en un campo va en `comments`, en líneas que empiezan con `CRM: ` (con espacio):
+
+  | Nota | Cuándo |
+  |---|---|
+  | `CRM: WhatsApp sin validar: <número>` | El número del formulario no es un WhatsApp válido, ni siquiera con el país. El cliente se reconoce por el correo. |
+  | `CRM: correo del formulario: <correo>` | El cliente queda con otro correo o sin correo, porque el formulario no se lo cambia. Termina en ` (registrado en otro cliente)` si ese correo es de otro cliente. |
+  | `CRM: fecha y hora no válidas en el formulario: <DD/MM/AAAA HH:MM>` | La fecha no existe (31/11) o la hora no es válida (24:00). La solicitud queda sin fecha. |
+  | `CRM: no se le escribió por WhatsApp: <motivo>.` | El backend no le escribió al cliente. Los motivos están en **Contacto por WhatsApp**. |
+
+  Ejemplo de `comments`:
+
+  ```text
+  Es el cumpleaños de mi mamá
+  País: Perú
+  Personas: 2-3
+  CRM: correo del formulario: ana.quispe@example.com (registrado en otro cliente)
+  CRM: no se le escribió por WhatsApp: faltan la fecha, la hora o las personas.
+  ```
+- **Sin duplicados:** el mismo código de la web nunca crea dos solicitudes, aunque el correo llegue dos veces. Las reservas con fecha pasada no crean cliente ni solicitud.
+- **Contacto por WhatsApp:** con `WEB_RESERVATION_WHATSAPP=true`, el backend le escribe al WhatsApp del formulario como Samanta (`authorUserId` = `SAMANTA_USER_ID`), con el código, la fecha, la hora y las personas:
+  - si el cliente escribió en las últimas 24 h, es un mensaje normal;
+  - si no, es la plantilla aprobada en Meta (`WEB_RESERVATION_TEMPLATE`, por defecto `solicitud_reserva_web`), que llega con `Message.templateName`. Si el cliente no tenía conversación de WhatsApp, se crea en ese momento y aparece en la Bandeja con ese saliente. La plantilla recomendada trae los botones «Sí, continuar» y «Cambiar datos».
+  - Si la plantilla pasa más de 6 h en cola (WhatsApp o Redis caídos), termina `FAILED` con `WHATSAPP_TEMPLATE_EXPIRED` y no se envía.
+
+  En estos casos no se le escribe, y la solicitud lleva la nota `CRM: no se le escribió por WhatsApp: <motivo>.`:
+
+  | Motivo (texto exacto) | Cuándo |
+  |---|---|
+  | `el aviso llegó hace más de 24 h` | El correo llegó hace más de `WEB_RESERVATION_CONTACT_MAX_HOURS` (24 h por defecto; la nota dice ese número), o no se sabe cuándo llegó. Pasa, por ejemplo, con los correos de antes de activar la lectura. No se crea la conversación: alguien del restaurante debe contactarlo. |
+  | `el formulario no trae un WhatsApp válido` | El cliente se reconoció por el correo. |
+  | `su conversación de WhatsApp la atiende una persona` | Su conversación de WhatsApp está en pausa manual (`MANUAL`) o se pausó en las últimas 24 h por cualquier motivo. |
+  | `el cliente está escribiendo por WhatsApp; la respuesta ya tiene esta solicitud` | La ventana está abierta y el último mensaje de la conversación es del cliente: Samanta o el equipo le responden con esta solicitud en el contexto. |
+  | `ya recibió una plantilla en las últimas 24 h` | La ventana está cerrada y su conversación ya recibió una plantilla en las últimas 24 h. |
+  | `faltan la fecha, la hora o las personas` | Hacía falta la plantilla y a la solicitud le falta alguno de esos datos. |
+  | `WhatsApp está desactivado en el servidor` | WhatsApp está apagado en el servidor. |
+  | `se alcanzó el tope diario de plantillas` | Ya se encolaron `WEB_RESERVATION_DAILY_LIMIT` plantillas (50 por defecto) desde las 00:00 UTC. |
+  | `WhatsApp no acepta ese número` | WhatsApp no tiene un destinatario válido para el cliente. |
+
+  Con `WEB_RESERVATION_WHATSAPP=false` no se le escribe a nadie ni se deja nota.
+- **Cuando el cliente responde** (también con un botón de la plantilla, que llega como `INBOUND` `TEXT` con el texto del botón), Samanta tiene la solicitud en su contexto y no vuelve a pedir los datos. Responde sola si el servidor tiene el modo automático para WhatsApp; si no, el mensaje espera en la Bandeja y un borrador manual también tiene la solicitud.
+- **Lo que ve Samanta.** Samanta recibe las solicitudes abiertas del cliente ([04 › Generar](04-bandeja-samanta.md#generar-un-borrador-con-samanta)). De las `WEBSITE` abiertas recibe además `specialRequirements` y `comments`, filtrados: sin las líneas que empiezan con `CRM: `, con los enlaces, correos y teléfonos cambiados por `[enlace]`, `[correo]` y `[número]`, y hasta 300 caracteres. Si alguien del equipo agrega una nota interna a una solicitud web abierta (`PATCH /reservation-requests/:id`), debe empezar la línea con `CRM: ` para que Samanta no la vea.
+- **Qué mostrar:** en Solicitudes, muestra `externalReference` como «Código web» y el canal `WEBSITE` como «Página web». Muestra `comments` con sus saltos de línea y destaca las líneas `CRM: `. El buscador de solicitudes no busca por `externalReference`.
+
 ## Modelos
 
 Recursos que devuelve el módulo. «Null» indica si el campo puede llegar en `null`; los campos siempre están presentes. Las fechas son instantes ISO 8601 en UTC.
@@ -2420,20 +2484,20 @@ Respuesta de `POST /customers`, `GET /customers`, `PATCH /customers/:id` y `PATC
 | Campo | Tipo | Null | Significado |
 |---|---|---|---|
 | `id` | `Uuid` | No | Identificador del cliente. |
-| `firstName` | string | Sí | Nombre (1–100). En Messenger, el nombre completo que da Meta; en WhatsApp, `null` hasta que alguien lo edite. |
+| `firstName` | string | Sí | Nombre (1–100). En Messenger, el nombre completo que da Meta; en Instagram, el nombre del perfil o `@usuario`; en WhatsApp, `null` hasta que alguien lo edite; en un cliente nuevo de la web, el nombre del formulario. |
 | `lastName` | string | Sí | Apellido (1–100). Los webhooks no lo llenan. |
 | `phone` | string | Sí | Teléfono tal como se escribió, con trim (hasta 80). WhatsApp: `+` y los dígitos (`"+51912345678"`). |
 | `phoneCountry` | string | Sí | País ISO alfa-2 en mayúsculas enviado con el teléfono. `null` si no se indicó o se borró el teléfono. |
 | `email` | string | Sí | Email en minúsculas (hasta 320). |
-| `sourceChannel` | `ContactChannel` | No | Canal de origen. Los webhooks crean `WHATSAPP` o `FACEBOOK`. |
-| `status` | `CustomerStatus` | No | Estado comercial. Nace en `NEW`. |
+| `sourceChannel` | `ContactChannel` | No | Canal de origen. Los webhooks crean `WHATSAPP`, `FACEBOOK` o `INSTAGRAM`, y las reservas de la web, `WEBSITE`. |
+| `status` | `CustomerStatus` | No | Estado comercial. Nace en `NEW`, salvo los clientes nuevos de la web, que nacen en `REQUESTED_RESERVATION`. |
 | `firstContactAt` | `IsoDateTime` | No | Primer contacto (alta). No cambia. |
-| `lastContactAt` | `IsoDateTime` | No | Último mensaje entrante o interés registrado. Nunca retrocede. |
+| `lastContactAt` | `IsoDateTime` | No | Último mensaje entrante, reserva de la web (la hora en que llegó el correo) o interés registrado. Nunca retrocede. |
 | `notes` | string | Sí | Notas internas (1–5000). |
 | `createdAt` | `IsoDateTime` | No | Alta del registro. |
 | `updatedAt` | `IsoDateTime` | No | Última modificación. |
 
-La API no expone `normalizedPhone`, `normalizedEmail`, `providerAccountId` ni `externalContactId` (identidad de Messenger).
+La API no expone `normalizedPhone`, `normalizedEmail`, `providerAccountId` ni `externalContactId` (identidad de Messenger o Instagram: el PSID o el IGSID, que es el destinatario de las respuestas).
 
 ### `CustomerDetail`
 
@@ -2484,6 +2548,7 @@ Respuesta de todas las rutas de `/reservation-requests`.
 |---|---|---|---|
 | `id` | `Uuid` | No | Id de la solicitud. |
 | `code` | string | No | `RES-<año>-<secuencia>`. Único; lo genera el backend. |
+| `externalReference` | string | Sí | Código que trajo la solicitud desde fuera del CRM, p. ej. el de la web (`SM-20261029-B65A25`). Único. `null` en las creadas en el CRM. Desde el 9/11 ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). |
 | `customerId` | `Uuid` | No | Cliente. Editable. |
 | `commercialItemId` | `Uuid` | Sí | Elemento comercial. |
 | `sourceChannel` | `ContactChannel` | No | Canal por el que llegó la solicitud; no se hereda del cliente. |
@@ -2491,8 +2556,8 @@ Respuesta de todas las rutas de `/reservation-requests`.
 | `numberOfPeople` | number | Sí | Personas (≥ 1). |
 | `quotedPrice` | `MoneyString` | Sí | Precio cotizado, con 2 decimales. Hay precio si y solo si hay `currency`. |
 | `currency` | `CurrencyCode` | Sí | Moneda del precio. |
-| `comments` | string | Sí | Comentarios (1–5000). |
-| `specialRequirements` | string | Sí | Requerimientos especiales (1–5000). |
+| `comments` | string | Sí | Comentarios (1–5000). En las de la web: el «Mensaje», el país, los datos que no se entendieron y las notas `CRM: ` ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). En una `WEBSITE` abierta, Samanta ve las líneas que no empiezan con `CRM: `, filtradas. |
+| `specialRequirements` | string | Sí | Requerimientos especiales (1–5000). En las de la web, la «Preferencia»; Samanta también la ve, filtrada. |
 | `status` | `ReservationRequestStatus` | No | Estado (ver abajo). |
 | `createdAt` | `IsoDateTime` | No | Alta; ordena el listado. |
 | `updatedAt` | `IsoDateTime` | No | Última modificación. |
@@ -2572,17 +2637,17 @@ Elementos de `rescheduleHistory`. No trae `reservationId`.
 
 | Valor | Etiqueta en ft-crm | Cómo se llega |
 |---|---|---|
-| `NEW` | Nuevo | Al crear el cliente, a mano o con su primer mensaje de WhatsApp o Messenger. |
+| `NEW` | Nuevo | Al crear el cliente, a mano o con su primer mensaje de WhatsApp, Messenger o Instagram. |
 | `INTERESTED` | Interesado | Solo con `PATCH /customers/:id/status`. |
 | `IN_CONVERSATION` | En conversación | Solo con `PATCH /customers/:id/status`. |
-| `REQUESTED_RESERVATION` | Solicitó reserva | Solo con `PATCH /customers/:id/status`. |
+| `REQUESTED_RESERVATION` | Solicitó reserva | Con `PATCH /customers/:id/status` y, desde el 9/11, automático con las reservas de la web: un cliente nuevo nace así, y uno existente en `NEW`, `INTERESTED` o `IN_CONVERSATION` pasa a este estado. |
 | `CONFIRMED` | Confirmado | Solo con `PATCH /customers/:id/status`. |
 | `REJECTED` | Rechazado | Solo con `PATCH /customers/:id/status`. |
 | `LOST` | Perdido | Solo con `PATCH /customers/:id/status`. |
 | `RECURRENT` | Recurrente | Solo con `PATCH /customers/:id/status`. |
 
 - Transiciones: de cualquier estado a cualquier otro, incluido el mismo, con `PATCH /customers/:id/status` (ADMIN, OPERATOR). No hay transición prohibida ni error de transición.
-- Automáticas: ninguna. Mensajes, intereses, solicitudes y reservas no cambian el estado. El código tiene pendiente integrar `REQUESTED_RESERVATION` y `CONFIRMED` con las reservas.
+- Automáticas: solo la de las reservas de la web, a `REQUESTED_RESERVATION` (desde el 9/11; [Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). Los mensajes, los intereses, las solicitudes creadas con la API y las reservas no cambian el estado. El código tiene pendiente integrar `REQUESTED_RESERVATION` y `CONFIRMED` con las reservas.
 - Un valor fuera del enum responde 400 `status must be one of the following values: NEW, INTERESTED, IN_CONVERSATION, REQUESTED_RESERVATION, CONFIRMED, REJECTED, LOST, RECURRENT`.
 
 ### Estado de la solicitud (`ReservationRequestStatus`)
@@ -2602,6 +2667,7 @@ Elementos de `rescheduleHistory`. No trae `reservationId`.
 | Desde | Hacia | Cómo | Roles |
 |---|---|---|---|
 | (alta) | `INCOMPLETE_DATA` o `READY_TO_SEND` | `POST /reservation-requests`; lo calcula el backend | ADMIN, OPERATOR |
+| (alta) | `INCOMPLETE_DATA` o `READY_TO_SEND` | Una reserva de la web que llega por correo (desde el 9/11); lo calcula el backend | Sistema |
 | `INCOMPLETE_DATA` | `READY_TO_SEND` | `PATCH /reservation-requests/:id` que deja fecha y personas | ADMIN, OPERATOR |
 | `READY_TO_SEND` | `INCOMPLETE_DATA` | `PATCH /reservation-requests/:id` con `reservationAt: null` o `numberOfPeople: null` | ADMIN, OPERATOR |
 | `INCOMPLETE_DATA`, `READY_TO_SEND` | `CANCELLED` | `PATCH /reservation-requests/:id/status` con `{ "status": "CANCELLED" }` | ADMIN, OPERATOR |
@@ -2656,8 +2722,8 @@ Errores de una transición u operación no permitida:
 
 ## Preguntas abiertas
 
-1. La respuesta de clientes no expone la identidad de proveedor (`providerAccountId`/`externalContactId`). Por eso el frontend no sabe de antemano si un cliente `FACEBOOK` viene de Messenger (canal bloqueado y contacto opcional): solo lo descubre al recibir el 400 `No se puede cambiar el canal de una identidad de Messenger`. ¿Se añadirá un indicador, por ejemplo `hasProviderIdentity`?
-2. `PATCH /customers/:id/status` acepta cualquier transición, y el estado del cliente no se sincroniza con solicitudes, reservas ni conversaciones (hay un TODO en `customers.service.ts`). ¿Qué flujo debe imponer la UI? Por ejemplo, ¿pasar a `REQUESTED_RESERVATION` al crear una solicitud?
+1. La respuesta de clientes no expone la identidad de proveedor (`providerAccountId`/`externalContactId`). Por eso el frontend no sabe de antemano si un cliente `FACEBOOK` o `INSTAGRAM` viene de Messenger o de Instagram (canal bloqueado y contacto opcional): solo lo descubre al recibir el 400 `No se puede cambiar el canal de una identidad del proveedor`. ¿Se añadirá un indicador, por ejemplo `hasProviderIdentity`?
+2. `PATCH /customers/:id/status` acepta cualquier transición, y el estado del cliente no se sincroniza con solicitudes, reservas ni conversaciones (hay un TODO en `customers.service.ts`). La única excepción, desde el 9/11, son las reservas de la web, que lo pasan a `REQUESTED_RESERVATION`. ¿Qué flujo debe imponer la UI? Por ejemplo, ¿pasar a `REQUESTED_RESERVATION` al crear una solicitud?
 3. No hay ruta para enviar una solicitud al dueño, aceptarla o convertirla en reserva: `reservationRequestId` siempre es `null` y los estados `SENT_TO_OWNER`, `WAITING_RESPONSE`, `ACCEPTED`, `REJECTED`, `MODIFICATION_REQUESTED` y `RENEGOTIATING` no se alcanzan. Samanta tampoco crea solicitudes. ¿Deben aparecer ya en los filtros y KPI de la UI? ¿Cuándo llega el flujo de aprobación?
 4. `GET /reservations` devuelve como máximo 100 reservas por página y no tiene filtro de reservas sin responsable. ¿El calendario necesita un modo sin paginación o un filtro tipo `unassigned`?
 5. Los mensajes de validación (400) llegan en inglés y como arreglo, y los de negocio en español como texto. ¿El frontend debe traducir los de validación, o el backend los personalizará?
@@ -2673,7 +2739,7 @@ Errores de una transición u operación no permitida:
 
 Bloque autocontenido: compila con `tsc --noEmit --strict --target es2022 --lib es2022,dom --module esnext --moduleResolution bundler`.
 - Los tipos compartidos (`Uuid`, `IsoDateTime`, `Paginated<T>`…) repiten la definición de `ft-crm/src/lib/api/types.ts`. `ApiErrorBody` usa la forma ampliada de [05](05-implementacion-ft-crm.md#22-typests): `code?: BffErrorCode` y los campos del 500 (`path`, `method`, `timestamp`). En el frontend, decláralos una sola vez.
-- Los tipos que ft-crm ya tiene (`Customer`, `ReservationRequest`, `Reservation`, `ReservationDetail`…) coinciden con el backend.
+- Los tipos que ft-crm ya tiene (`Customer`, `ReservationRequest`, `Reservation`, `ReservationDetail`…) coinciden con el backend, salvo `ReservationRequest.externalReference`, nuevo del 9/11.
 - Los nuevos siguen el estilo de cada familia: `…Request` en clientes (como `UpdateCustomerStatusRequest`) y `…Body` en solicitudes y reservas (como `CancelReservationRequestBody`).
 
 ```ts
@@ -2781,7 +2847,7 @@ export type CustomerStatus = (typeof CUSTOMER_STATUSES)[number];
 
 export interface Customer {
   id: Uuid;
-  /** Messenger: nombre completo que da Meta (o null). WhatsApp: null hasta que alguien lo edite. */
+  /** Messenger: nombre completo que da Meta (o null). Instagram: nombre del perfil o "@usuario". WhatsApp: null hasta que alguien lo edite. Web: nombre del formulario. */
   firstName: string | null;
   lastName: string | null;
   /** Tal como se escribió (con trim). WhatsApp: "+51912345678". La forma E.164 no se expone. */
@@ -2790,12 +2856,15 @@ export interface Customer {
   phoneCountry: string | null;
   /** En minúsculas. */
   email: string | null;
-  /** Canal de origen. Los webhooks crean WHATSAPP o FACEBOOK. */
+  /** Canal de origen. Los webhooks crean WHATSAPP, FACEBOOK o INSTAGRAM, y las reservas de la web, WEBSITE. */
   sourceChannel: ContactChannel;
-  /** Nace en NEW; solo cambia con PATCH /customers/:id/status. */
+  /**
+   * Nace en NEW (los clientes nuevos de la web, en REQUESTED_RESERVATION). Cambia con PATCH /customers/:id/status
+   * y, desde el 9/11, con una reserva de la web: NEW, INTERESTED o IN_CONVERSATION pasan a REQUESTED_RESERVATION.
+   */
   status: CustomerStatus;
   firstContactAt: IsoDateTime;
-  /** Mensajes entrantes e intereses registrados. Nunca retrocede. */
+  /** Mensajes entrantes, reservas de la web e intereses registrados. Nunca retrocede. */
   lastContactAt: IsoDateTime;
   notes: string | null;
   createdAt: IsoDateTime;
@@ -2859,7 +2928,7 @@ export interface CreateCustomerRequest {
 
 /** Body de PATCH /customers/:id. Omitir = conservar; null = borrar. Al menos un campo. */
 export interface UpdateCustomerRequest {
-  /** No admite null. En una identidad de Messenger solo se acepta "FACEBOOK". */
+  /** No admite null. En una identidad del proveedor solo se acepta su canal: "FACEBOOK" (Messenger) o "INSTAGRAM". */
   sourceChannel?: ContactChannel;
   firstName?: string | null;
   lastName?: string | null;
@@ -2909,6 +2978,8 @@ export interface ReservationRequest {
   id: Uuid;
   /** "RES-<año>-<secuencia>", p. ej. "RES-2026-000042". */
   code: string;
+  /** Código de origen, p. ej. el de la web ("SM-20261029-B65A25"); null si se creó en el CRM. */
+  externalReference: string | null;
   customerId: Uuid;
   commercialItemId: Uuid | null;
   sourceChannel: ContactChannel;
@@ -2918,7 +2989,12 @@ export interface ReservationRequest {
   /** Presente si y solo si currency también lo está. */
   quotedPrice: MoneyString | null;
   currency: CurrencyCode | null;
+  /**
+   * En las de la web, una línea por dato: «Mensaje», "País: …", datos no entendidos y notas "CRM: ".
+   * En una WEBSITE abierta, Samanta ve las líneas que no empiezan con "CRM: " (filtradas).
+   */
   comments: string | null;
+  /** En las de la web, la «Preferencia». */
   specialRequirements: string | null;
   /** Lo calcula el backend: READY_TO_SEND si hay reservationAt y numberOfPeople. */
   status: ReservationRequestStatus;

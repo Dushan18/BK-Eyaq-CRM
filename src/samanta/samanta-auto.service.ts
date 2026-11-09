@@ -16,7 +16,11 @@ import {
   type ProcessedMessage,
 } from '../messaging/assistant-bridge';
 import { MessagingTransactionService } from '../messaging/messaging-transaction.service';
-import { OutboundMessagesService } from '../messaging/outbound-messages.service';
+import { messageSelect } from '../messaging/messaging.select';
+import {
+  OutboundMessagesService,
+  SERVICE_WINDOW_MS,
+} from '../messaging/outbound-messages.service';
 import { SamantaConfig } from './samanta.config';
 import { SamantaContextService } from './samanta-context.service';
 import {
@@ -98,6 +102,40 @@ export class SamantaAutoService
       message.type !== 'TEXT'
     )
       return;
+    await this.schedule(tx, message, `auto-${message.id}`);
+  }
+
+  async assistantResumed(tx: Prisma.TransactionClient, conversationId: string) {
+    if (!this.config.autoEnabled) return;
+    const latest = await tx.message.findFirst({
+      where: { conversationId },
+      orderBy: { sequence: 'desc' },
+      select: messageSelect,
+    });
+    // Only an unanswered text still inside the 24-hour window: an older one could not
+    // be answered, and a reply that fails would hand the conversation back at once.
+    if (
+      !latest ||
+      latest.direction !== 'INBOUND' ||
+      latest.type !== 'TEXT' ||
+      latest.status !== 'PROCESSED' ||
+      (latest.occurredAt ?? latest.createdAt).getTime() <
+        Date.now() - SERVICE_WINDOW_MS
+    )
+      return;
+    // A new key: an earlier reply to this message may exist (stale while paused).
+    await this.schedule(
+      tx,
+      latest,
+      `auto-${latest.id}-r${Date.now().toString(36)}`,
+    );
+  }
+
+  private async schedule(
+    tx: Prisma.TransactionClient,
+    message: ProcessedMessage,
+    idempotencyKey: string,
+  ) {
     const { conversationId } = message;
     await tx.$queryRaw`SELECT id FROM conversations WHERE id = ${conversationId} FOR UPDATE`;
     const conversation = await tx.conversation.findUniqueOrThrow({
@@ -131,7 +169,7 @@ export class SamantaAutoService
           conversationId,
           sourceMessageId: message.id,
           baselineSequence: message.sequence,
-          idempotencyKey: `auto-${message.id}`,
+          idempotencyKey,
           createdById: SAMANTA_USER_ID,
           mode: 'AUTO',
           status: 'SCHEDULED',

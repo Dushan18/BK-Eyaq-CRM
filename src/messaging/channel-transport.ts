@@ -37,6 +37,13 @@ export interface ChannelAddress {
   recipientPhone: string | null;
   recipientExternalId: string | null;
 }
+// A pre-approved provider template: the only way to write first, or outside the window.
+export interface OutboundTemplate {
+  name: string;
+  language: string;
+  // Positional body parameters, {{1}}, {{2}}...
+  parameters: string[];
+}
 // Everything the outbox needs from a provider, so the core never branches on channel names.
 export interface ChannelTransport {
   readonly channel: ContactChannel;
@@ -52,6 +59,11 @@ export interface ChannelTransport {
   assertEnabled(): void;
   recipientOf(customer: ChannelRecipientSource): ChannelAddress | null;
   sendMessage(to: ChannelAddress, content: string): Promise<string>;
+  /** Only channels with approved templates (WhatsApp). */
+  sendTemplate?(
+    to: ChannelAddress,
+    template: OutboundTemplate,
+  ): Promise<string>;
 }
 
 export function exceedsTextLimit(

@@ -12,6 +12,7 @@ import {
   type ChannelDeliveryStatus,
   type ChannelRecipientSource,
   type ChannelTransport,
+  type OutboundTemplate,
 } from '../messaging/channel-transport';
 import { readSendDiagnostic } from '../messaging/send-diagnostic';
 import { fingerprint } from '../messaging/meta-webhook';
@@ -66,6 +67,22 @@ function contactProfile(
     ...(WHATSAPP_USERNAME.test(username) ? { username } : {}),
     ...(name ? { name } : {}),
   };
+}
+// What the customer chose with a tap: a template's quick-reply button arrives as type
+// "button" (button.text); our own interactive buttons and list rows as type "interactive"
+// (button_reply / list_reply, with the visible title). Lenient: anything else is unknown.
+function chosenReply(message: Record<string, unknown>): string | undefined {
+  const interactive = record(message.interactive);
+  const value =
+    message.type === 'button'
+      ? record(message.button)?.text
+      : message.type === 'interactive'
+        ? (record(interactive?.button_reply) ?? record(interactive?.list_reply))
+            ?.title
+        : undefined;
+  return typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, 1000)
+    : undefined;
 }
 // Meta issues a new BSUID when a user changes their number and reports the previous one.
 export interface WhatsAppUserIdChange {
@@ -203,12 +220,16 @@ export class WhatsAppAdapter
                     occurredAt: timestamp(message.timestamp).toISOString(),
                   };
                   let command: InboundMessageCommand;
+                  const reply = chosenReply(message);
                   if (message.type === 'text') {
                     command = {
                       ...base,
                       type: 'TEXT',
                       content: text(object(message.text).body, 16000),
                     };
+                  } else if (reply !== undefined) {
+                    // A button tap is what the customer "said": Samanta answers it.
+                    command = { ...base, type: 'TEXT', content: reply };
                   } else if (
                     message.type === 'image' ||
                     message.type === 'document'
@@ -260,7 +281,37 @@ export class WhatsAppAdapter
     });
     return { messages, statuses, rejected, userIdChanges };
   }
-  async sendMessage(address: ChannelAddress, content: string): Promise<string> {
+  sendMessage(address: ChannelAddress, content: string): Promise<string> {
+    return this.post(address, { type: 'text', text: { body: content } });
+  }
+  // Template parameters cannot contain line breaks, tabs or more than four consecutive
+  // spaces; Meta rejects the whole message otherwise.
+  sendTemplate(address: ChannelAddress, template: OutboundTemplate) {
+    return this.post(address, {
+      type: 'template',
+      template: {
+        name: template.name,
+        language: { code: template.language },
+        ...(template.parameters.length
+          ? {
+              components: [
+                {
+                  type: 'body',
+                  parameters: template.parameters.map((value) => ({
+                    type: 'text',
+                    text: value.replace(/\s+/g, ' ').trim() || '-',
+                  })),
+                },
+              ],
+            }
+          : {}),
+      },
+    });
+  }
+  private async post(
+    address: ChannelAddress,
+    message: Record<string, unknown>,
+  ): Promise<string> {
     this.config.assertEnabled();
     // Meta addresses a BSUID with `recipient`; with both, it would use `to` anyway.
     const target = address.recipientPhone
@@ -284,8 +335,7 @@ export class WhatsAppAdapter
           body: JSON.stringify({
             messaging_product: 'whatsapp',
             ...target,
-            type: 'text',
-            text: { body: content },
+            ...message,
           }),
         },
       );

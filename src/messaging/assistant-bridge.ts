@@ -13,6 +13,12 @@ export interface AssistantHandler {
     tx: Prisma.TransactionClient,
     message: ProcessedMessage,
   ): Promise<void>;
+  // The conversation went back to Samanta: she answers the customer's last message if
+  // nobody did (it arrived while she was paused). Runs inside the resume transaction.
+  assistantResumed(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+  ): Promise<void>;
 }
 
 // SamantaModule imports MessagingModule, so messaging cannot inject Samanta directly.

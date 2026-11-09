@@ -32,6 +32,13 @@ import {
   samantaTestConfig,
   samantaTestProvider,
 } from './samanta.cases';
+import { EmailConfig } from '../src/email/email.config';
+import { MailboxReader } from '../src/email/mailbox-reader';
+import {
+  emailTestConfig,
+  emailTestReader,
+  registerEmailTests,
+} from './email.cases';
 
 interface BookingResponse {
   assignedUserId?: string | null;
@@ -174,6 +181,10 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
       .useValue(samantaTestConfig)
       .overrideProvider(SamantaProvider)
       .useValue(samantaTestProvider)
+      .overrideProvider(EmailConfig)
+      .useValue(emailTestConfig)
+      .overrideProvider(MailboxReader)
+      .useValue(emailTestReader)
       .compile();
     app = fixture.createNestApplication({ rawBody: true });
     app.useGlobalPipes(
@@ -1644,4 +1655,5 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     app: () => app,
     prisma: () => prisma,
   });
+  registerEmailTests({ app: () => app, prisma: () => prisma });
 });

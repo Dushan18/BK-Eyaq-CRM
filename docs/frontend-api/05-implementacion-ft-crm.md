@@ -3,6 +3,8 @@
 > Parte de la [referencia de la API de bk-crm para el frontend](README.md). Estado: 3 de noviembre de 2026.
 >
 > Código revisado: bk-crm en `main` (`9538556`) y ft-crm en `main` (`aaeb85e`), los dos con sus cambios sin commit del 3/11. Las rutas de archivo de ft-crm empiezan en `ft-crm/src`.
+>
+> Revisión del 8/11: el envío por Instagram y los cambios de bk-crm del 9/11 (plantillas, `templateName`, `externalReference`) se comprobaron contra bk-crm en la rama `whatsapp-identidad` y contra ft-crm en `56519b5`, con sus cambios sin commit del 8/11, que ya responden en Instagram.
 
 Esta guía es el plan para conectar ft-crm con bk-crm en modo live (`CRM_BACKEND_MODE=live`). Reúne por pantalla lo que los módulos 01 a 04 explican por ruta, propone el código de `src/lib/api/` y lista lo que el mock hace distinto del backend real.
 
@@ -37,13 +39,13 @@ Esta guía es el plan para conectar ft-crm con bk-crm en modo live (`CRM_BACKEND
 | 1 | Aplica la capa de API: `types.ts`, `endpoints.ts`, `query-keys.ts` y el nuevo `errors.ts`. | `npm run typecheck` y `npm test` pasan, con el ajuste de `servicios-logic.test.ts`. | [§2](#2-capa-de-api) |
 | 2 | Ajusta el manejo de errores: «sin conexión» frente a «función apagada», y errores de validación por campo. | Las acciones nuevas usan `isConnectionError` e `isDisabledInServer` (no `ApiError.isUnavailable`), y los formularios llevan los 400 de validación a su campo con `serverFormErrors`. | [§4](#4-manejo-de-errores-en-la-ui) |
 | 3 | Prepara los datos del primer arranque: configuración del restaurante, catálogo aprobado y un usuario por rol. | Empresa guarda, Servicios aprueba y puedes entrar con ADMIN, OWNER y OPERATOR. | [Ajustes](#ajustes--empresa) |
-| 4 | Habilita Messenger (canal `FACEBOOK`) en la Bandeja. | Puedes responder en Messenger con tope de 2000 caracteres y los fallos `MESSENGER_*` tienen texto. | [Bandeja](#bandeja) |
+| 4 | Habilita Messenger (canal `FACEBOOK`) e Instagram (canal `INSTAGRAM`) en la Bandeja. Ya aplicado en ft-crm: Messenger en `56519b5` e Instagram el 8/11, sin commit. | Puedes responder en Messenger con tope de 2000 caracteres y en Instagram con tope de 1000 caracteres y 1000 bytes UTF-8, y los fallos `MESSENGER_*` e `INSTAGRAM_*` tienen texto. | [Bandeja](#bandeja) |
 | 5 | Añade los borradores de Samanta al chat. | Puedes generar, esperar, editar, aprobar y rechazar un borrador. | [Bandeja](#bandeja) |
 | 6 | Crea las altas y ediciones que faltan en clientes, solicitudes y reservas. | Las 11 funciones nuevas de [03](03-clientes-reservas.md#funciones-y-claves-de-caché-en-ft-crm) tienen pantalla o formulario. | [Clientes](#clientes), [Solicitudes](#solicitudes), [Calendario](#calendario) |
 | 7 | Corrige los textos del flujo del dueño, que bk-crm aún no tiene. | Ninguna pantalla promete algo que el backend no hace. | [§3](#3-guía-por-pantalla) y [§6](#6-de-mock-a-live-lista-de-comprobación) |
 | 8 | Pon al día el mock y las pruebas. | El mock responde como bk-crm en las rutas nuevas, y `npm test` y `npm run test:e2e` pasan. | [§6](#6-de-mock-a-live-lista-de-comprobación) |
 
-Si hay que recortar, empieza por los pasos 0 a 4: con datos reales es lo que más se nota, porque hoy la Bandeja no deja responder en Messenger.
+Si hay que recortar, empieza por los pasos 0 a 4: con datos reales es lo que más se nota. La Bandeja ya responde en Messenger e Instagram (paso 4): falta probarla en live, en Instagram con una cuenta que tenga un rol en la app de Meta.
 
 ## 2. Capa de API
 
@@ -52,7 +54,7 @@ Son tres archivos de `src/lib/api/` y uno nuevo. `client.ts` no cambia: `apiFetc
 | Archivo | Qué cambia |
 |---|---|
 | `endpoints.ts` | Se añaden 25 funciones, 6 de ellas en el objeto nuevo `assistantDraftsApi`. Cambia el tipo del body de `catalogApi.create`. |
-| `types.ts` | Se reemplazan 6 declaraciones y se añaden los tipos de las rutas nuevas. |
+| `types.ts` | Se reemplazan 7 declaraciones y se añaden los tipos de las rutas nuevas. |
 | `query-keys.ts` | Se añaden 7 claves. |
 | `errors.ts` (nuevo) | Ayudas para clasificar errores y llevar los de validación a cada campo ([§4](#4-manejo-de-errores-en-la-ui)). |
 
@@ -358,12 +360,13 @@ Los tipos coinciden con los bloques **Tipos TypeScript** de cada módulo. Aquí 
 | `ApiErrorBody` | `code` pasa a `BffErrorCode` (nuevo). Se añaden `path`, `method` y `timestamp`, opcionales. | El BFF solo pone `NO_SESSION`, `SESSION_EXPIRED` o `BACKEND_UNAVAILABLE`. El 500 de bk-crm trae `path`, `method` y `timestamp`. | No. `ApiError.code` sigue siendo `string`. |
 | `CommercialItem` | `category`, `images`, `faqs`, `schedules`, `promotionDetail` y `eventDetail` pasan a tener tipos completos. | ft-crm los declaraba como `unknown[]` o con campos de menos ([02 · Modelos](02-configuracion-catalogo.md#commercialitem)). | Sí: `src/features/ajustes/servicios/servicios-logic.test.ts` (líneas 116 y 137) arma `promotionDetail` sin `id`, `createdAt` ni `updatedAt`. Complétalos. |
 | `CreateCommercialItemRequest` | Pasa a admitir todos los campos del DTO. `nameEs` deja de ser obligatorio: basta con `nameEs` o `nameEn`. | El alta mínima de Servicios sigue valiendo; un editor completo necesita el resto. | No. `buildCreateItemBody` sigue compilando. |
-| `Message` | `errorCode` pasa a `MessageErrorCode \| null`. Se corrige el comentario de `authorUserId`. | bk-crm solo produce esos códigos. Un `OUTBOUND` creado por la API siempre tiene autor: `null` no significa «Samanta». | No. `inbox-utils.test.ts` usa `WHATSAPP_WINDOW_CLOSED`, que es válido. |
-| `SendMessageRequest` | Solo el comentario. | El tope es por canal: 4096 en WhatsApp y 2000 en Messenger, medido con `content.length`. | No |
+| `Message` | `errorCode` pasa a `MessageErrorCode \| null`. Se añade `templateName: string \| null` (9/11). Se corrige el comentario de `authorUserId`. | bk-crm solo produce esos códigos. Desde el 9/11 todo `Message` trae `templateName`: el nombre de la plantilla de WhatsApp con que salió, o `null`. Un `OUTBOUND` creado por la API siempre tiene autor: `null` no significa «Samanta». | Sí: los `Message` que arman el mock (`src/lib/mock/routes/inbox.ts`, `seed.ts` y `simulator.ts`) y las pruebas necesitan `templateName: null`. `inbox-utils.test.ts` usa `WHATSAPP_WINDOW_CLOSED`, que es válido. |
+| `ReservationRequest` | Se añade `externalReference: string \| null` (9/11). | Código de origen de las solicitudes que el backend crea desde la web (`SM-…`); `null` en las creadas en el CRM. | Sí: los `ReservationRequest` que arman el mock (`src/lib/mock/routes/reservations.ts`, `seed.ts` y `simulator.ts`) y las pruebas necesitan `externalReference: null`. |
+| `SendMessageRequest` | Solo el comentario. | El tope es por canal: 4096 en WhatsApp, 2000 en Messenger y 1000 en Instagram, medido con `content.length`. Instagram admite además como máximo 1000 bytes UTF-8. | No |
 | `OUTBOUND_CONTENT_MAX_LENGTH` | Solo el comentario. | Es el tope del DTO, no el del canal. | No |
 
 No cambian, porque coinciden con el backend:
-- `Customer`, `CustomerDetail`, `CustomerSummary`, `ReservationRequest`, `Reservation`, `ReservationDetail` y los demás tipos de [03](03-clientes-reservas.md#tipos-typescript);
+- `Customer`, `CustomerDetail`, `CustomerSummary`, `Reservation`, `ReservationDetail` y los demás tipos de [03](03-clientes-reservas.md#tipos-typescript), salvo `ReservationRequest`;
 - `Conversation`, `ConversationAssignedUser`, `MessageAttachment` y las query de [04](04-bandeja-samanta.md#tipos-typescript);
 - `User`, `LoginUser`, `MeResponse`, `RestaurantConfig` y `CommercialCategory`;
 - `CommercialItemListQuery`: sus uniones `sort` y `order` son las mismas que `CommercialItemSortField` y `SortOrder`.
@@ -451,16 +454,19 @@ export interface Message {
   channel: ContactChannel;
   /** Orden total dentro de la conversación: ordenar siempre por sequence. */
   sequence: number;
-  /** wamid (WhatsApp) o mid (Messenger). En OUTBOUND es null hasta SENT. */
+  /** wamid (WhatsApp) o mid (Messenger e Instagram). En OUTBOUND es null hasta SENT. */
   externalMessageId: string | null;
   direction: MessageDirection;
   status: MessageStatus;
+  /** El toque de un botón de WhatsApp llega como TEXT, con el texto del botón. */
   type: MessageType;
-  /** null en IMAGE o FILE sin pie de foto. */
+  /** null en IMAGE o FILE sin pie de foto. En una plantilla, la versión del CRM del texto enviado. */
   content: string | null;
+  /** Solo OUTBOUND de WhatsApp: plantilla aprobada en Meta con que se envió (p. ej. "solicitud_reserva_web"); null en los demás. */
+  templateName: string | null;
   /**
-   * INBOUND: null. OUTBOUND: usuario que lo envió o que aprobó el borrador de Samanta.
-   * Un OUTBOUND creado por la API nunca tiene autor null: null no significa «Samanta».
+   * INBOUND: null. OUTBOUND: usuario que lo envió o que aprobó el borrador de Samanta, o SAMANTA_USER_ID
+   * si Samanta respondió sola o avisó de una reserva de la web. Un OUTBOUND nunca tiene autor null: null no significa «Samanta».
    */
   authorUserId: Uuid | null;
   /** INBOUND: hora del proveedor. OUTBOUND: null. */
@@ -468,8 +474,9 @@ export interface Message {
   receivedAt: IsoDateTime | null;
   processedAt: IsoDateTime | null;
   sentAt: IsoDateTime | null;
+  /** Instagram no informa entregas: siempre null. */
   deliveredAt: IsoDateTime | null;
-  /** Solo WhatsApp: Messenger no informa lecturas. */
+  /** Solo WhatsApp: Messenger e Instagram no informan lecturas. */
   providerReadAt: IsoDateTime | null;
   failedAt: IsoDateTime | null;
   /** INBOUND: leído por el equipo en el CRM. OUTBOUND: siempre null. */
@@ -482,12 +489,42 @@ export interface Message {
 
 export interface SendMessageRequest {
   type: "TEXT";
-  /** Al menos un carácter no blanco. content.length ≤ OUTBOUND_TEXT_MAX_LENGTH del canal (4096 WhatsApp, 2000 Messenger). */
+  /**
+   * Al menos un carácter no blanco. content.length ≤ OUTBOUND_TEXT_MAX_LENGTH del canal (4096 WhatsApp, 2000 Messenger,
+   * 1000 Instagram) y, en Instagram, ≤ 1000 bytes UTF-8 (OUTBOUND_TEXT_MAX_BYTES).
+   */
   content: string;
 }
 
 /** Tope del DTO de envío (cuenta cada emoji como 1). Para el textarea y el contador usa OUTBOUND_TEXT_MAX_LENGTH. */
 export const OUTBOUND_CONTENT_MAX_LENGTH = 4096;
+```
+
+```ts
+// src/lib/api/types.ts · reemplaza: ReservationRequest
+export interface ReservationRequest {
+  id: Uuid;
+  /** "RES-2026-000042" */
+  code: string;
+  /** Código de origen (9/11), p. ej. el de la web ("SM-20261029-B65A25"); null si se creó en el CRM. */
+  externalReference: string | null;
+  customerId: Uuid;
+  commercialItemId: Uuid | null;
+  sourceChannel: ContactChannel;
+  /** null mientras faltan datos. */
+  reservationAt: IsoDateTime | null;
+  numberOfPeople: number | null;
+  quotedPrice: MoneyString | null;
+  currency: CurrencyCode | null;
+  /** En las de la web: «Mensaje», "País: …", datos no entendidos y notas "CRM: ", una por línea. */
+  comments: string | null;
+  specialRequirements: string | null;
+  status: ReservationRequestStatus;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+  customer: CustomerSummary;
+  commercialItem: CommercialItemSummary | null;
+}
 ```
 
 **Declaraciones nuevas.** Añádelas en la sección correspondiente de `types.ts`; el orden no importa para el compilador.
@@ -786,7 +823,7 @@ export interface CreateCustomerRequest {
 
 /** Body de PATCH /customers/:id. Omitir = conservar; null = borrar. Al menos un campo. */
 export interface UpdateCustomerRequest {
-  /** No admite null. En una identidad de Messenger solo se acepta "FACEBOOK". */
+  /** No admite null. En una identidad del proveedor solo se acepta su canal: "FACEBOOK" (Messenger) o "INSTAGRAM". */
   sourceChannel?: ContactChannel;
   firstName?: string | null;
   lastName?: string | null;
@@ -920,8 +957,8 @@ export interface RescheduleReservationBody {
 ```ts
 // src/lib/api/types.ts · añade (bandeja y Samanta)
 /** Canales en los que bk-crm puede enviar (tienen transporte registrado). */
-export type SendableChannel = Extract<ContactChannel, "WHATSAPP" | "FACEBOOK">;
-export const SENDABLE_CHANNELS: readonly SendableChannel[] = ["WHATSAPP", "FACEBOOK"];
+export type SendableChannel = Extract<ContactChannel, "WHATSAPP" | "FACEBOOK" | "INSTAGRAM">;
+export const SENDABLE_CHANNELS: readonly SendableChannel[] = ["WHATSAPP", "FACEBOOK", "INSTAGRAM"];
 
 /** Acota un ContactChannel a los canales con envío. */
 export function isSendableChannel(channel: ContactChannel): channel is SendableChannel {
@@ -932,6 +969,12 @@ export function isSendableChannel(channel: ContactChannel): channel is SendableC
 export const OUTBOUND_TEXT_MAX_LENGTH: Readonly<Record<SendableChannel, number>> = {
   WHATSAPP: 4096,
   FACEBOOK: 2000,
+  INSTAGRAM: 1000,
+};
+
+/** Instagram además limita los bytes UTF-8 (new TextEncoder().encode(texto).length): las tildes ocupan 2 y los emojis 4. */
+export const OUTBOUND_TEXT_MAX_BYTES: Readonly<Partial<Record<SendableChannel, number>>> = {
+  INSTAGRAM: 1000,
 };
 
 /** Prefijo reservado: el backend usa "samanta-<draftId>" al aprobar un borrador. */
@@ -946,7 +989,10 @@ export type InboundMessageErrorCode =
   /** FAILED: se agotaron los 5 intentos de procesamiento. */
   | "MESSAGE_ATTEMPTS_EXHAUSTED";
 
-/** Códigos de `Message.errorCode` en mensajes salientes (prefijo WHATSAPP_ o MESSENGER_). */
+/**
+ * Códigos de `Message.errorCode` en mensajes salientes (prefijo WHATSAPP_, MESSENGER_ o INSTAGRAM_).
+ * Instagram no informa entregas: nunca llega a DELIVERED ni tiene DELIVERY_FAILED.
+ */
 export type OutboundMessageErrorCode =
   | "WHATSAPP_RATE_LIMITED"
   | "WHATSAPP_SEND_UNKNOWN"
@@ -954,12 +1000,19 @@ export type OutboundMessageErrorCode =
   | "WHATSAPP_WINDOW_CLOSED"
   | "WHATSAPP_SEND_REJECTED"
   | "WHATSAPP_DELIVERY_FAILED"
+  /** FAILED: una plantilla pasó más de 6 h en cola sin poder enviarse (9/11). */
+  | "WHATSAPP_TEMPLATE_EXPIRED"
   | "MESSENGER_RATE_LIMITED"
   | "MESSENGER_SEND_UNKNOWN"
   | "MESSENGER_SEND_INVALID"
   | "MESSENGER_WINDOW_CLOSED"
   | "MESSENGER_SEND_REJECTED"
-  | "MESSENGER_DELIVERY_FAILED";
+  | "MESSENGER_DELIVERY_FAILED"
+  | "INSTAGRAM_RATE_LIMITED"
+  | "INSTAGRAM_SEND_UNKNOWN"
+  | "INSTAGRAM_SEND_INVALID"
+  | "INSTAGRAM_WINDOW_CLOSED"
+  | "INSTAGRAM_SEND_REJECTED";
 
 export type MessageErrorCode = InboundMessageErrorCode | OutboundMessageErrorCode;
 
@@ -1034,7 +1087,7 @@ export interface SamantaDraft {
   revision: number;
   /** Modelo de IA (SAMANTA_MODEL). */
   model: string;
-  /** Versión del prompt ("samanta-drafts-v1"). */
+  /** Versión del prompt: "samanta-v3" desde el 9/11; antes, "samanta-v2" (8/11) o "samanta-drafts-v1". */
   promptVersion: string;
   /** SHA-256 (hex) de la información comercial usada. */
   knowledgeHash: string;
@@ -1082,9 +1135,9 @@ Lo que no se añade a `types.ts`, aunque esté en los bloques de los módulos:
 
 Ajustes fuera de `src/lib/api/` que implica este cambio:
 - `src/features/ajustes/servicios/servicios-logic.test.ts`: completa los dos `promotionDetail` del test con `id`, `createdAt` y `updatedAt`.
-- `src/lib/domain/channels.ts`: elimina su `SENDABLE_CHANNELS`, que solo incluye `WHATSAPP`. En `composerState` (`src/features/bandeja/inbox-utils.ts`), cambia `SENDABLE_CHANNELS.includes(conversation.channel)` por `isSendableChannel(conversation.channel)`. Con el nuevo tipo `readonly SendableChannel[]`, `includes` no acepta un `ContactChannel`.
+- `src/lib/domain/channels.ts`: ya no tiene `SENDABLE_CHANNELS` (ft-crm `56519b5`). `composerState` (`src/features/bandeja/inbox-utils.ts`) usa `isSendableChannel(conversation.channel)` y, desde el 8/11, ya no tiene el caso que bloqueaba `INSTAGRAM` («Instagram por ahora solo recibe mensajes…»).
 - `src/features/ajustes/servicios/servicios-logic.ts`: su `MONEY_PATTERN` es la misma expresión que la de `types.ts`. Importa la de `types.ts` para no tener dos.
-- El mock no necesita cambios para compilar: arma `images: []`, `promotionDetail: null` y `errorCode: null`.
+- `templateName` y `externalReference` (9/11): agrega `templateName: null` a los `Message` y `externalReference: null` a los `ReservationRequest` que arman el mock (`src/lib/mock/routes/*.ts`, `seed.ts` y `simulator.ts`) y las pruebas. Aparte de eso, el mock no necesita cambios para compilar: arma `images: []`, `promotionDetail: null` y `errorCode: null`.
 
 ### 2.3 `query-keys.ts`
 
@@ -1248,7 +1301,7 @@ Las acciones de catálogo (`catalog.edit`) y de usuarios (`users.manage`) ya cub
 - **SUPPORT.** No tiene ninguna vista: `homePathFor` devuelve `null` y el marco muestra «Tu rol no tiene vistas habilitadas». Es coherente con bk-crm, que solo le deja usar `/auth/me` y el logout.
 - **Configuración.** `useRestaurant()` solo consulta con la sesión lista y un rol que puede ver Ajustes (ADMIN, OWNER u OPERATOR). Un 404 significa que el restaurante no está configurado (`missing`), y no se reintenta. Mientras no hay configuración, las fechas se muestran en `America/Lima` y los importes en `PEN`.
 - **Errores.** Si `GET /auth/me` falla por otra causa que no sea 401, el marco muestra `ErrorState` con «Reintentar». Con un 503 o 504 `BACKEND_UNAVAILABLE`, el título es «No se pudo cargar tu sesión.».
-- **Falta en el backend.** No hay endpoint para saber qué está habilitado en el servidor (WhatsApp, Messenger, Samanta), ni para listar roles ni para cambiar la contraseña con la sesión abierta.
+- **Falta en el backend.** No hay endpoint para saber qué está habilitado en el servidor (WhatsApp, Messenger, Instagram, Samanta), ni para listar roles ni para cambiar la contraseña con la sesión abierta.
 
 ### Login
 
@@ -1343,35 +1396,62 @@ Las acciones de catálogo (`catalog.edit`) y de usuarios (`users.manage`) ya cub
 | Tomar una libre o liberar la propia | Sí (también tomar o liberar la de otra persona) | Sí | No | `conversationControls` |
 | Generar, editar, aprobar o rechazar borradores | Sí | Sí, salvo si la conversación está asignada a otra persona (403 `Conversación asignada a otro operador`) | No | `can("draft.review")` (nueva) |
 
-**Messenger (canal `FACEBOOK`).** Hoy no se puede responder en Messenger. Cambios:
-- **Canal.** En `composerState`, usa `isSendableChannel(conversation.channel)`. Exige `customer.phone` solo en `WHATSAPP`: en Messenger no hay teléfono, y el backend resuelve el destinatario con el PSID, que no se expone.
-- **Tope.** Usa `OUTBOUND_TEXT_MAX_LENGTH[channel]` en el `maxLength` del textarea y en el contador. Hoy ambos usan `OUTBOUND_CONTENT_MAX_LENGTH` (4096) y el contador aparece a 300 del tope.
-- **Ventana de 24 h.** Aplica `estimateReplyWindow` también a `FACEBOOK`: `chat-panel.tsx` hoy solo lo hace en `WHATSAPP`. El texto de ventana cerrada es distinto por canal: en Messenger hay que esperar a que el cliente escriba.
-- **Fallos.** `FAILED_TEXT` y `outboundStatusView` solo conocen códigos `WHATSAPP_*`. Usa el sufijo del código, como en el ejemplo de abajo. Messenger nunca llega a `READ`: su último estado posible es `DELIVERED`.
-- **Errores al enviar.** Hoy `sendErrorText` ya muestra con el texto del backend un 503 `Messenger no está habilitado` y un 400 `Messenger admite hasta 2000 caracteres por respuesta`: solo trata como falta de conexión los status 0, 502 y 504. Lo que falla es que describe todo 409 de ventana (también `Ventana de Messenger cerrada; el cliente debe enviar un nuevo mensaje`) y todo 400 de destinatario (`Conversación sin destinatario habilitado`) como si fueran de WhatsApp. Elige el texto según `conversation.channel`.
-- **Nombre.** `customerName` termina en «Cliente sin nombre». Los clientes de Messenger no tienen teléfono ni email; normalmente traen en `firstName` el nombre que da Meta, pero puede faltar. Usa «Cliente de Messenger» como respaldo.
+**Messenger e Instagram (canales `FACEBOOK` e `INSTAGRAM`).** Ya aplicado en ft-crm: Messenger desde `56519b5` e Instagram con los cambios del 8/11, sin commit. Lo que hace hoy, y lo que hay que conservar:
+- **Canal.** `composerState` usa `isSendableChannel(conversation.channel)`, con `INSTAGRAM` en `SENDABLE_CHANNELS`, y exige `customer.phone` solo en `WHATSAPP`: en Messenger e Instagram no hay teléfono, y el backend resuelve el destinatario con el PSID o el IGSID, que no se exponen. En `WEBSITE`, `PHONE`, `EMAIL` y `OTHER` el editor sigue deshabilitado.
+- **Tope.** El textarea y el contador usan `replyMaxLength` (`OUTBOUND_TEXT_MAX_LENGTH[channel]`: 4096, 2000 y 1000). En Instagram mandan los bytes: el contador muestra `bytes/1000 bytes` (`replyMaxBytes` y `utf8Length`) y, con más de 1000 bytes, avisa «Instagram admite hasta 1000 bytes por respuesta…» y no deja enviar. El editor del borrador de Samanta aplica los mismos topes y no deja aprobar un texto que no cabe.
+- **Ventana de 24 h.** `chat-panel.tsx` aplica `estimateReplyWindow` en los canales de `SENDABLE_CHANNELS`. El texto de ventana cerrada es distinto por canal (`windowClosedText`): en Messenger e Instagram hay que esperar a que el cliente escriba.
+- **Fallos.** `outboundErrorKind` quita el prefijo (`WHATSAPP_`, `MESSENGER_` o `INSTAGRAM_`) y `OUTBOUND_ERROR_TEXT` da el texto por sufijo, como en el ejemplo de abajo. Messenger nunca llega a `READ` (su último estado posible es `DELIVERED`), e Instagram nunca pasa de `SENT`: «✓ Enviado» es su estado final.
+- **Errores al enviar.** `sendErrorText` elige el texto según `conversation.channel` (`sendChannelName` y `windowClosedText`) y solo trata como falta de conexión lo que `isConnectionError` reconoce: el status 0, el 502 y los `BACKEND_UNAVAILABLE` del BFF. En Instagram llegan:
+  - 503 `Instagram no está habilitado` o `El envío por Instagram no está configurado` (sin `INSTAGRAM_ACCESS_TOKEN`: solo recibe), que se muestran como «El envío por Instagram no está habilitado en el servidor.»;
+  - 400 `Instagram admite hasta 1000 caracteres por respuesta`;
+  - 400 `Instagram admite hasta 1000 bytes por respuesta; las tildes y los emojis ocupan más de uno`;
+  - 400 `Conversación sin destinatario habilitado`;
+  - 409 `Ventana de Instagram cerrada; el cliente debe enviar un nuevo mensaje`.
+- **Entrega.** Con acceso estándar a la API de Meta, Instagram solo entrega a cuentas que tienen un rol en la app. A otra cuenta, el envío responde 202 y el mensaje termina `FAILED` con `INSTAGRAM_SEND_REJECTED` («No se envió: el canal lo rechazó»).
+- **Nombre.** `customerName` (`src/lib/domain/conversation.ts`) termina en «Cliente de Messenger» o «Cliente de Instagram» según el canal y, si no, en «Cliente sin nombre». Los clientes de Messenger e Instagram no tienen teléfono ni email; normalmente traen en `firstName` el nombre que da Meta (en Instagram, el nombre del perfil o `@usuario`), pero puede faltar.
 
 ```ts
-// ejemplo: src/features/bandeja/channel-utils.ts — tope, textos de fallo y nombre según el canal
+// ejemplo: src/features/bandeja/channel-utils.ts — topes, textos de fallo y de ventana según el canal (así está en ft-crm desde el 8/11)
 import {
   isSendableChannel,
+  OUTBOUND_TEXT_MAX_BYTES,
   OUTBOUND_TEXT_MAX_LENGTH,
   type ContactChannel,
-  type CustomerSummary,
   type Message,
   type OutboundMessageErrorCode,
 } from "@/lib/api/types";
 
-/** Tope de content.length del Composer, o null si el canal no tiene envío. */
+/** Tope de content.length del cuadro de texto, o null si el canal no tiene envío. */
 export function replyMaxLength(channel: ContactChannel): number | null {
   return isSendableChannel(channel) ? OUTBOUND_TEXT_MAX_LENGTH[channel] : null;
 }
 
-type Suffix<T> = T extends `${"WHATSAPP" | "MESSENGER"}_${infer S}` ? S : never;
-/** "RATE_LIMITED" | "SEND_UNKNOWN" | "SEND_INVALID" | "WINDOW_CLOSED" | "SEND_REJECTED" | "DELIVERY_FAILED" */
+/** Tope de bytes UTF-8 del cuadro de texto (solo Instagram), o null si el canal no cuenta bytes. */
+export function replyMaxBytes(channel: ContactChannel): number | null {
+  return isSendableChannel(channel) ? (OUTBOUND_TEXT_MAX_BYTES[channel] ?? null) : null;
+}
+
+/** Bytes UTF-8 de un texto, como los cuenta Instagram: «á» ocupa 2 y un emoji 4. */
+export function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** Nombre del canal en los textos de envío. */
+export function sendChannelName(channel: ContactChannel): string {
+  return channel === "FACEBOOK" ? "Messenger" : channel === "INSTAGRAM" ? "Instagram" : "WhatsApp";
+}
+
+type Suffix<T> = T extends `${"WHATSAPP" | "MESSENGER" | "INSTAGRAM"}_${infer S}` ? S : never;
+/** "RATE_LIMITED" | "SEND_UNKNOWN" | "SEND_INVALID" | "WINDOW_CLOSED" | "SEND_REJECTED" | "DELIVERY_FAILED" | "TEMPLATE_EXPIRED" */
 export type OutboundErrorKind = Suffix<OutboundMessageErrorCode>;
 
-/** Textos sugeridos en 04 (Estados y transiciones), válidos para los dos canales. */
+/** Tipo de fallo de un saliente, sin el prefijo del canal; null si el código no es de envío. */
+export function outboundErrorKind(code: Message["errorCode"]): OutboundErrorKind | null {
+  const kind = code?.replace(/^(?:WHATSAPP|MESSENGER|INSTAGRAM)_/, "");
+  return kind && kind in OUTBOUND_ERROR_TEXT ? (kind as OutboundErrorKind) : null;
+}
+
+/** Textos sugeridos en 04 (Estados y transiciones), válidos para los tres canales con envío. */
 export const OUTBOUND_ERROR_TEXT: Record<OutboundErrorKind, string> = {
   RATE_LIMITED: "Reintentando…",
   SEND_UNKNOWN: "Estado incierto: verifica antes de reenviar",
@@ -1379,29 +1459,32 @@ export const OUTBOUND_ERROR_TEXT: Record<OutboundErrorKind, string> = {
   WINDOW_CLOSED: "No se envió: pasaron más de 24 h desde el último mensaje del cliente",
   SEND_REJECTED: "No se envió: el canal lo rechazó",
   DELIVERY_FAILED: "No se pudo entregar",
+  TEMPLATE_EXPIRED: "No se envió: la plantilla esperó demasiado en cola",
 };
 
 export function outboundErrorText(code: Message["errorCode"]): string | null {
-  const kind = code?.replace(/^(?:WHATSAPP|MESSENGER)_/, "");
-  return kind && kind in OUTBOUND_ERROR_TEXT ? OUTBOUND_ERROR_TEXT[kind as OutboundErrorKind] : null;
+  const kind = outboundErrorKind(code);
+  return kind ? OUTBOUND_ERROR_TEXT[kind] : null;
 }
 
-/** Nombre visible: nombre y apellido, teléfono, email o un respaldo según el canal. */
-export function customerDisplayName(customer: CustomerSummary, channel: ContactChannel): string {
-  const name = [customer.firstName, customer.lastName]
-    .map((part) => part?.trim())
-    .filter(Boolean)
-    .join(" ");
-  return name || customer.phone || customer.email || (channel === "FACEBOOK" ? "Cliente de Messenger" : "Cliente sin nombre");
+/** Texto de la ventana de 24 h cerrada, según el canal. */
+export function windowClosedText(channel: ContactChannel): string {
+  if (channel === "FACEBOOK" || channel === "INSTAGRAM")
+    return `Pasaron más de 24 h desde el último mensaje del cliente en ${sendChannelName(channel)}: podrás responder cuando vuelva a escribir.`;
+  return "La ventana de 24 h de WhatsApp está cerrada: podrás responder cuando el cliente vuelva a escribir.";
 }
 ```
 
 **Samanta con borradores.** Una persona pide un borrador, lo revisa y lo aprueba ([Samanta](README.md#samanta-borradores-con-revisión-humana) y [04](04-bandeja-samanta.md#generar-un-borrador-con-samanta)). Si el servidor tiene el modo automático, Samanta además responde sola, y sus mensajes y borradores `AUTO` llegan por las mismas rutas ([04 › Samanta automática](04-bandeja-samanta.md#samanta-automática)). Flujo en el chat:
-1. **Cuándo ofrecer «Generar».** Solo si la conversación es de `WHATSAPP`, no está en pausa, el último mensaje cargado es un `INBOUND` de texto y el usuario tiene `draft.review`. Un OPERATOR, además, solo si la conversación está libre o es suya.
+1. **Cuándo ofrecer «Generar».** Solo si la conversación es de `WHATSAPP`, `FACEBOOK` o `INSTAGRAM` (`isSendableChannel`), no está en pausa, el último mensaje cargado es un `INBOUND` de texto y el usuario tiene `draft.review`. Un OPERATOR, además, solo si la conversación está libre o es suya. ft-crm ya muestra el panel de Samanta en los tres canales (8/11).
 2. **Generar.** `assistantDraftsApi.generate(id, ultimoMensaje.id, clave)`. Genera la clave al hacer clic y reutilízala solo para reintentar esa misma generación, por ejemplo tras un 504: el BFF corta a los 65 s y bk-crm devuelve el mismo borrador sin generar otro.
 3. **Esperar.** Si el borrador llega en `GENERATING`, consulta su detalle cada 2–3 s hasta que cambie.
-4. **Revisar.** En `READY`, muestra el texto editable, `intent`, el aviso de `requiresHuman`, `missingFields` y una cuenta atrás hasta `expiresAt` (15 min). Editar suma 1 a `revision`. Envía siempre la `revision` que tienes en pantalla al editar, aprobar o rechazar.
-5. **Aprobar o rechazar.** Al aprobar, bk-crm encola un `OUTBOUND` cuyo autor es quien aprueba y lo guarda en `outboundMessageId`. Invalida el chat para verlo. Aprobar hace las mismas comprobaciones que enviar: puede responder 503 `WhatsApp no está habilitado`, 409 de ventana cerrada o 400 `Conversación sin destinatario habilitado`, y en esos casos el borrador sigue en `READY` ([Aprobar un borrador](04-bandeja-samanta.md#aprobar-un-borrador-y-encolar-el-envío)).
+4. **Revisar.** En `READY`, muestra el texto editable, `intent`, el aviso de `requiresHuman`, `missingFields` y una cuenta atrás hasta `expiresAt` (15 min). Editar suma 1 a `revision`. Envía siempre la `revision` que tienes en pantalla al editar, aprobar o rechazar. El editor debe aplicar el tope del canal: en Instagram, 1000 caracteres y 1000 bytes UTF-8 (la IA recibe un tope de 800 caracteres, pero no lo garantiza). ft-crm ya lo hace (`maxLength` y `maxBytes` del editor).
+5. **Aprobar o rechazar.** Al aprobar, bk-crm encola un `OUTBOUND` cuyo autor es quien aprueba y lo guarda en `outboundMessageId`. Invalida el chat para verlo. Aprobar hace las mismas comprobaciones que enviar, y en todos estos casos el borrador sigue en `READY` ([Aprobar un borrador](04-bandeja-samanta.md#aprobar-un-borrador-y-encolar-el-envío)):
+   - 503 con el canal apagado: `WhatsApp no está habilitado`, `Messenger no está habilitado`, `Instagram no está habilitado` o `El envío por Instagram no está configurado`;
+   - 400 si el texto no cabe en el canal (en Instagram, más de 1000 caracteres o de 1000 bytes UTF-8);
+   - 400 `Conversación sin destinatario habilitado`;
+   - 409 de ventana cerrada.
 6. **Desactualizado.** Un borrador pasa a `STALE` si llega otro mensaje, si se pausa a Samanta, si vence o si cambia la información comercial. Ofrece generar otro con una clave nueva.
 
 ```ts
@@ -1495,7 +1578,7 @@ Ajustes de la Bandeja que dependen de Samanta:
 **Panel derecho.**
 - El texto «Aún no hay solicitud. Samanta la crea cuando el cliente confirma fecha, hora y personas.» no se cumple: Samanta no crea solicitudes. Cámbialo y, para ADMIN y OPERATOR, ofrece «Nueva solicitud» con `requestsApi.create({ customerId, sourceChannel: conversation.channel, … })` ([Solicitudes](#solicitudes)).
 - Los pasos «Enviada al dueño» y «Respuesta del dueño» de la línea de tiempo nunca se alcanzan. Además, con una solicitud `CANCELLED`, `requestTimeline` (`src/lib/domain/statuses.ts`) marca los tres pasos como completados, también «Enviada al dueño», aunque nunca se envió. Ajusta la línea de tiempo para ese estado.
-- En los clientes de Messenger, «Teléfono» y «Correo» quedan en «—».
+- En los clientes de Messenger e Instagram, «Teléfono» y «Correo» quedan en «—».
 
 **Estados vacíos y errores.** Ya están resueltos: carga, error sin datos, aviso «Sin conexión…» si falla un sondeo con datos, «Aún no hay conversaciones.» y «Sin conversaciones para este filtro.». Un `c` que no es UUID o que da 404 muestra «No se encontró la conversación». Al enviar:
 - un 503 de canal apagado no es «sin conexión» ([§4](#44-qué-hacer-según-el-código));
@@ -1507,7 +1590,7 @@ Ajustes de la Bandeja que dependen de Samanta:
 - un filtro «sin asignar»;
 - el vencimiento de la ventana de 24 h;
 - un endpoint de capacidades;
-- Samanta en Messenger y las lecturas de Messenger;
+- las lecturas de Messenger y los recibos de Instagram (entrega y lectura); Samanta ya atiende en Messenger e Instagram;
 - resolver o reintentar mensajes `UNKNOWN`;
 - descargar adjuntos (solo hay metadata);
 - los nombres de los autores para OWNER y OPERATOR;
@@ -1598,9 +1681,9 @@ export function storeReservationNote(queryClient: QueryClient, note: Reservation
 **Permisos.** Ven ADMIN, OWNER y OPERATOR. Escriben ADMIN y OPERATOR: `can("customer.edit")` ya cubre esos roles.
 
 **Cambios para live:**
-- **Nombre.** Los clientes de WhatsApp llegan sin nombre y con teléfono. Los de Messenger, sin teléfono ni email, y con el nombre de Meta en `firstName` cuando Meta lo da. Hoy `customerIdentity` muestra «Cliente sin nombre» si no hay nada: usa «Cliente de Messenger» cuando `sourceChannel` es `FACEBOOK`.
-- **Estado comercial.** El backend acepta cualquier transición y nunca lo cambia solo: todos los clientes nuevos quedan en `NEW`. Decide con producto qué estados ofrecer.
-- **Canal de Messenger.** No se puede cambiar el canal de un cliente de Messenger: responde 400 `No se puede cambiar el canal de una identidad de Messenger`, y la respuesta no indica de antemano si el cliente es de Messenger. Para `sourceChannel: "FACEBOOK"`, no ofrezcas cambiar el canal.
+- **Nombre.** Los clientes de WhatsApp llegan sin nombre y con teléfono. Los de Messenger e Instagram, sin teléfono ni email, y con el nombre de Meta en `firstName` cuando Meta lo da (en Instagram, el nombre del perfil o `@usuario`). Los nuevos de la web, con el nombre del formulario. Sin nombre ni contacto, `customerIdentity` ya muestra «Cliente de Messenger» o «Cliente de Instagram» según `sourceChannel`.
+- **Estado comercial.** El backend acepta cualquier transición y solo lo cambia por su cuenta con las reservas de la web (desde el 9/11): un cliente nuevo de la web nace en `REQUESTED_RESERVATION`, y uno existente en `NEW`, `INTERESTED` o `IN_CONVERSATION` pasa a ese estado. Los demás clientes nuevos quedan en `NEW`. Decide con producto qué estados ofrecer.
+- **Canal de Messenger o Instagram.** No se puede cambiar el canal de un cliente creado por el webhook de Messenger o de Instagram: responde 400 `No se puede cambiar el canal de una identidad del proveedor`, y la respuesta no indica de antemano si el cliente es una de esas identidades. Para `sourceChannel: "FACEBOOK"` o `"INSTAGRAM"`, no ofrezcas cambiar el canal.
 - **Teléfono.** Cambiar el teléfono de un cliente con conversación de WhatsApp cambia el destinatario de las respuestas ([Editar cliente](03-clientes-reservas.md#editar-cliente)). Avísalo en el formulario.
 - **Duplicados.** Un teléfono o email que ya tiene otro cliente responde 409. Muéstralo en el campo.
 - **Rendimiento.** Cada fila hace dos llamadas (RESERVAS y CONSULTÓ): hasta 40 por página de 20.
@@ -1611,7 +1694,7 @@ export function storeReservationNote(queryClient: QueryClient, note: Reservation
 - el número de reservas y el último interés en el listado;
 - buscar por nombre completo;
 - la fusión de clientes;
-- un indicador de identidad de Messenger.
+- un indicador de identidad de Messenger o Instagram.
 
 ### Solicitudes
 
@@ -1633,6 +1716,10 @@ export function storeReservationNote(queryClient: QueryClient, note: Reservation
 **Cambios para live:**
 - **Flujo del dueño.** Con las rutas actuales solo se alcanzan `INCOMPLETE_DATA` y `READY_TO_SEND` (los calcula el backend según haya fecha y personas) y `CANCELLED`. Las pestañas Esperando, Aceptadas y Rechazadas, y sus tres KPI, siempre estarán en 0. Ocúltalos o márcalos como «Próximamente».
 - **Subtítulo.** «Samanta envía cada solicitud al WhatsApp del dueño…» no se cumple: cámbialo.
+- **Solicitudes de la web (9/11).** El backend crea solicitudes `WEBSITE` con las reservas que llegan por correo ([03 › Solicitudes que llegan de la web](03-clientes-reservas.md#solicitudes-que-llegan-de-la-web)):
+  - Muestra `externalReference` como «Código web» y el canal `WEBSITE` como «Página web». El buscador no busca por `externalReference`.
+  - `comments` trae una línea por dato: el «Mensaje», `País: …`, los datos que no se entendieron («Personas: 2-3») y las notas del sistema, que empiezan con `CRM: ` (WhatsApp sin validar, correo de otro cliente, fecha inválida o por qué no se le escribió al cliente). Muestra los saltos de línea y destaca esas notas.
+  - Samanta ve `comments` y `specialRequirements` de las solicitudes web abiertas, salvo las líneas `CRM: `. Si el formulario de edición deja agregar notas internas, pide que empiecen con `CRM: `.
 - **Formulario nuevo.**
   - Campos: cliente, canal, elemento (activo y aprobado), fecha futura, personas (entero ≥ 1), precio con moneda, comentarios y requisitos.
   - Si mandas precio sin moneda, el backend usa la del restaurante.
@@ -1934,7 +2021,7 @@ Los 400, 403, 404 y 409 con `message` de tipo string vienen en español y ya est
 |---|---|---|
 | `Configura el restaurante antes de crear solicitudes o reservas` | 409 | Enlaza a Ajustes › Empresa (solo ADMIN puede configurarlo). |
 | `El responsable de aprobación debe estar activo` · `El responsable de aprobación debe tener el rol OWNER` | 400 | Lleva a Ajustes › Samanta para elegir otro responsable. |
-| `Ventana de WhatsApp cerrada; se requiere una plantilla aprobada` · `Ventana de Messenger cerrada; el cliente debe enviar un nuevo mensaje` | 409 | Deshabilita el editor hasta que llegue otro `INBOUND`. |
+| `Ventana de WhatsApp cerrada; se requiere una plantilla aprobada` · `Ventana de Messenger cerrada; el cliente debe enviar un nuevo mensaje` · `Ventana de Instagram cerrada; el cliente debe enviar un nuevo mensaje` | 409 | Deshabilita el editor hasta que llegue otro `INBOUND`. |
 | `Idempotency-Key ya utilizada con otros datos` (enviar) · `Idempotency-Key utilizada con otros datos` (generar) | 409 | Genera una clave nueva: desde el primer intento cambió el texto, el mensaje fuente del borrador o el usuario. |
 | `El borrador cambió; vuelve a revisarlo` | 409 | Relee el borrador y muestra el texto nuevo antes de aprobar. |
 | `Borrador desactualizado o fallido; genera uno nuevo` | 409 | Ofrece «Generar otro». |
@@ -1971,7 +2058,7 @@ Conflictos de concurrencia: la operación chocó con otra. Refresca y deja que l
 | 429 | Login y recuperación (texto del BFF); `Límite de generación de Samanta alcanzado` | Muestra el texto y deshabilita la acción un rato. En Samanta no se sabe si se agotó el límite diario o el de generaciones simultáneas. |
 | 500 | `Ocurrió un error interno`, con `path`, `method` y `timestamp` | «El servidor tuvo un error interno» con «Reintentar». Guarda `timestamp` para soporte. |
 | 502 | Solo en `/api/auth/*` (bk-crm respondió algo inesperado) o en un proxy delante de ft-crm | Igual que la falta de conexión. |
-| 503 sin `code` | bk-crm: `WhatsApp no está habilitado`, `Messenger no está habilitado`, `Samanta está desactivada`, `La zona horaria del restaurante no es válida` | Una función está apagada en el servidor (`isDisabledInServer`): muestra el texto y deshabilita la acción. No digas «sin conexión». |
+| 503 sin `code` | bk-crm: `WhatsApp no está habilitado`, `Messenger no está habilitado`, `Instagram no está habilitado`, `El envío por Instagram no está configurado`, `Samanta está desactivada`, `La zona horaria del restaurante no es válida` | Una función está apagada en el servidor (`isDisabledInServer`): muestra el texto y deshabilita la acción. No digas «sin conexión». |
 | 503 o 504 con `BACKEND_UNAVAILABLE` | El BFF no llegó a bk-crm: red, servidor caído o más de 15 s (65 s al generar un borrador) | «No se pudo conectar» (`isConnectionError`). Antes de repetir un POST que no es idempotente, refresca: pudo completarse. |
 
 `ApiError.isUnavailable` es `true` con 0, 502, 503 y 504, sin mirar `code`. Hoy no causa errores visibles: ninguna consulta (`GET`) responde 503 sin `code`, y al enviar, `sendErrorText` ya separa el 503 (solo trata como falta de conexión 0, 502 y 504). El riesgo está en el código nuevo. Las rutas que sí responden 503 sin `code` (generar, editar y aprobar borradores de Samanta; crear solicitudes y reservas con una zona horaria inválida) no deben pasar por `isUnavailable` ni por `actionErrorText` (`use-conversation-actions.ts`), que ante cualquier 503 responde «No se pudo conectar con el servidor.». Usa `isConnectionError` e `isDisabledInServer`.
@@ -2079,11 +2166,11 @@ El mock (`src/lib/mock/server.ts`, `seed.ts` y `simulator.ts`) implementa 28 de 
 | Usuarios | `POST /users` con `roles: []` responde 400 con un string (`Debes asignar al menos un rol`). No valida el formato del email. `PATCH /users/:id/roles` cambia `updatedAt`. La regla del último ADMIN no mira si el usuario está activo. | Mensajes de class-validator en array (`roles must contain at least 1 elements`, `email must be an email`). Cambiar roles no toca `updatedAt`. La regla solo aplica a un ADMIN activo. | `createUserErrorTarget` y los errores por campo. |
 | Configuración | Arranca configurado. El PUT valida poco: URL con una regex simple; no valida email, zona horaria ni decimales de las coordenadas. | 404 hasta el primer PUT y DTO completo. | `SetupForm` y los errores por campo de Empresa. |
 | Catálogo | Elementos `APPROVED` por defecto. `POST /commercial-items` acepta solo 7 campos. Categorías ordenadas solo por `displayOrder`. | 86 elementos en `DRAFT` (9 sin `nameEs`), DTO completo y orden `displayOrder`, `nameEs`, `nameEn`. | Aprobar el catálogo y tener un editor. |
-| Clientes | Casi todos con nombre y todos con teléfono, también los de `FACEBOOK`. `PATCH /customers/:id/status` no valida el enum. | WhatsApp: sin nombre. Messenger: sin teléfono ni email. Enum validado. | Textos de respaldo del nombre. |
+| Clientes | Casi todos con nombre y todos con teléfono, también los de `FACEBOOK`. `PATCH /customers/:id/status` no valida el enum. | WhatsApp: sin nombre. Messenger e Instagram: sin teléfono ni email. Enum validado. | Textos de respaldo del nombre. |
 | Solicitudes | El simulador las lleva a `WAITING_RESPONSE`, `ACCEPTED` o `REJECTED`. | Solo `INCOMPLETE_DATA`, `READY_TO_SEND` y `CANCELLED`. | KPI y pestañas en 0. |
 | Reservas | Hay reservas que nacen de solicitudes aceptadas (`reservationRequestId` con valor). | Solo `POST /reservations` (ADMIN); `reservationRequestId` siempre `null`. | Calendario vacío y la píldora «Registrada en el CRM». |
-| Envío | Solo `WHATSAPP` con teléfono; si no, 400 `Conversación sin destinatario WhatsApp habilitado`. Tope de 4096 en todos los canales. Nunca 503 ni 409 `Conflicto de mensajería`. | `WHATSAPP` y `FACEBOOK`; 400 `Conversación sin destinatario habilitado`; 2000 en Messenger; 503 con el canal apagado. | Messenger y los textos de error. |
-| Estados de envío | Siempre `QUEUED` → `SENT` (1,2 s) → `DELIVERED` (2,6 s). | Dependen de `MESSAGING_ENABLED`, Redis y Meta. `READ` solo en WhatsApp; también `FAILED` y `UNKNOWN`. | Textos de `FAILED` y `UNKNOWN`. |
+| Envío | `WHATSAPP`, `FACEBOOK` e `INSTAGRAM` (`isSendableChannel`, desde el 8/11); en otro canal, 400 `Conversación sin destinatario habilitado`. Topes de 4096, 2000 y 1000 caracteres y, en Instagram, 1000 bytes, con los textos de bk-crm. Nunca 503 ni 409 `Conflicto de mensajería`. | Lo mismo, más el 503 con el canal apagado (o con Instagram sin `INSTAGRAM_ACCESS_TOKEN`). Instagram solo entrega a cuentas con un rol en la app de Meta (acceso estándar). | Los 503 y la entrega real en Instagram. |
+| Estados de envío | `QUEUED` → `SENT` (1,2 s) → `DELIVERED` (2,6 s); Instagram se queda en `SENT`. | Dependen de `MESSAGING_ENABLED`, Redis y Meta. `READ` solo en WhatsApp; Instagram termina en `SENT`; también `FAILED` y `UNKNOWN`. | Textos de `FAILED` y `UNKNOWN`. |
 | Samanta | El simulador escribe `OUTBOUND` sin autor y ya `DELIVERED`. Regla de «más de 20 personas». | Borradores revisados por una persona; todo `OUTBOUND` tiene autor; no existe la regla de 20 personas. | `messageAuthor` y el panel de borradores. |
 | Validación | Mensajes genéricos (p. ej. `page must not be less than 1` para cualquier página inválida). Nunca 413, 415 ni 429. | Mensajes exactos de class-validator. | `fieldErrors`. |
 | Salud | `/api/listo` responde `{ "estado": "ok", "backend": "simulado" }` sin consultar nada. | `/api/listo` consulta `GET /health`. | Que `/api/listo` dé `"disponible"`. |
@@ -2110,7 +2197,9 @@ Sesión:
 
 Bandeja:
 - [ ] Messenger: envío, tope de 2000, ventana de 24 h y textos `MESSENGER_*`.
-- [ ] Respaldo «Cliente de Messenger» en la lista, el chat, Clientes, Solicitudes y Calendario.
+- [ ] Instagram: envío sin teléfono, tope de 1000 caracteres y 1000 bytes UTF-8, ventana de 24 h, textos `INSTAGRAM_*`, los dos 503 de Instagram y último estado `SENT`. Pruébalo con una cuenta que tenga un rol en la app de Meta.
+- [ ] Plantillas de WhatsApp (9/11): el aviso de una reserva de la web se ve como de Samanta y `WHATSAPP_TEMPLATE_EXPIRED` tiene texto.
+- [ ] Respaldo «Cliente de Messenger» y «Cliente de Instagram» en la lista, el chat, Clientes, Solicitudes y Calendario.
 - [ ] `messageAuthor` ya no supone que un `OUTBOUND` sin autor es de Samanta.
 - [ ] Panel de borradores de Samanta, con el aviso de `Samanta está desactivada` cuando `SAMANTA_ENABLED=false`.
 - [ ] Con `WHATSAPP_ENABLED=false`, enviar avisa que WhatsApp no está habilitado (hoy `sendErrorText` muestra «El envío por WhatsApp no está habilitado en el servidor.») y no «sin conexión».
@@ -2125,21 +2214,22 @@ Solicitudes, Calendario, Clientes y Estadísticas:
 
 Mock y pruebas:
 - [ ] El mock responde las rutas nuevas como bk-crm, o al menos las pantallas nuevas muestran bien su 404.
-- [ ] El mock usa `Conversación sin destinatario habilitado`, acepta `FACEBOOK` con tope de 2000 y su `POST /users` con `roles: []` responde como bk-crm.
+- [ ] El mock usa `Conversación sin destinatario habilitado`, acepta `FACEBOOK` con tope de 2000 e `INSTAGRAM` con tope de 1000 caracteres y 1000 bytes (400 con los textos de Instagram), no lleva a `DELIVERED` los salientes de Instagram, y su `POST /users` con `roles: []` responde como bk-crm.
+- [ ] Los `Message` y los `ReservationRequest` del mock traen `templateName` y `externalReference` (9/11).
 - [ ] Las pruebas e2e siguen en modo mock; el modo live se prueba a mano con la [sección 7](#7-cómo-probar-contra-el-backend-real).
 
 ## 7. Cómo probar contra el backend real
 
 ### 7.1 bk-crm en local
 
-1. **Requisitos.** Node.js y PostgreSQL. Redis solo hace falta para encender WhatsApp o Messenger, que exigen `MESSAGING_ENABLED=true` y `REDIS_URL` (`bk-crm/docs/redis-docker.md`). Samanta genera borradores sin Redis, pero aprobar uno envía por WhatsApp, así que para probar el flujo completo también lo necesitas.
+1. **Requisitos.** Node.js y PostgreSQL. Redis solo hace falta para encender WhatsApp, Messenger o Instagram, que exigen `MESSAGING_ENABLED=true` y `REDIS_URL` (`bk-crm/docs/redis-docker.md`). Samanta necesita el canal encendido incluso para generar, porque comprueba el envío antes de llamar a la IA, y aprobar envía por el canal de la conversación: para probarla también necesitas Redis.
 2. **`.env`.** Cópialo de `.env.example` y ajusta:
    - `DATABASE_URL`: tu PostgreSQL local.
    - `JWT_SECRET` y `JWT_REFRESH_SECRET`: dos valores distintos.
    - `ADMIN_EMAIL` y `ADMIN_PASSWORD`: serán tu usuario ADMIN.
    - `WHATSAPP_ENABLED=false`. `.env.example` trae `true` con las credenciales vacías, y así bk-crm no arranca (`WHATSAPP_ACCESS_TOKEN requerida`).
-   - `MESSAGING_ENABLED=false` si no tienes Redis. Entonces WhatsApp y Messenger tienen que estar apagados (si no, bk-crm no arranca: `WhatsApp requiere MESSAGING_ENABLED y REDIS_URL`), y enviar responde 503.
-   - `MESSENGER_ENABLED=false` y `SAMANTA_ENABLED=false`, como en `.env.example`.
+   - `MESSAGING_ENABLED=false` si no tienes Redis. Entonces WhatsApp, Messenger e Instagram tienen que estar apagados (si no, bk-crm no arranca: `WhatsApp requiere MESSAGING_ENABLED y REDIS_URL` o `Instagram requiere MESSAGING_ENABLED y REDIS_URL`), y enviar responde 503.
+   - `MESSENGER_ENABLED=false`, `INSTAGRAM_ENABLED=false` y `SAMANTA_ENABLED=false`, como en `.env.example`. Para probar Instagram, configura `INSTAGRAM_ENABLED=true`, `INSTAGRAM_ACCOUNT_ID`, `INSTAGRAM_VERIFY_TOKEN` y `META_APP_SECRET`; para responder, además `INSTAGRAM_ACCESS_TOKEN` e `INSTAGRAM_API_VERSION` (p. ej. `v26.0`). Guía: `bk-crm/docs/instagram-webhook.md`.
    - `FRONTEND_RESET_PASSWORD_URL=http://localhost:5173/reset-password`, que ya es el valor del ejemplo.
    - `RESEND_API_KEY`: una clave real solo si quieres recibir el correo de recuperación (con el remitente de prueba `onboarding@resend.dev`, Resend solo entrega al dueño de la cuenta). No la dejes vacía: bk-crm no arranca (`RESEND_API_KEY no está configurada`). Con el valor del ejemplo arranca, pero el correo no sale y la respuesta de `forgot-password` es la misma.
 3. **Base de datos y arranque.**
@@ -2161,7 +2251,7 @@ Mock y pruebas:
    Remove-Item Env:ALLOW_MESSAGING_DEMO
    ```
 
-   Crea un cliente ficticio (`messaging.demo@example.com`) con una conversación de WhatsApp y dos mensajes entrantes. El script fuerza `MESSAGING_ENABLED=false`, así que solo funciona con `WHATSAPP_ENABLED=false` y `MESSENGER_ENABLED=false`; si no, falla con `No se pudo preparar la demo`. Ese cliente no tiene teléfono: con WhatsApp habilitado, responderle daría 400 `Conversación sin destinatario habilitado`.
+   Crea un cliente ficticio (`messaging.demo@example.com`) con una conversación de WhatsApp y dos mensajes entrantes. El script fuerza `MESSAGING_ENABLED=false`, así que solo funciona con `WHATSAPP_ENABLED=false`, `MESSENGER_ENABLED=false` e `INSTAGRAM_ENABLED=false`; si no, falla con `No se pudo preparar la demo`. Ese cliente no tiene teléfono: con WhatsApp habilitado, responderle daría 400 `Conversación sin destinatario habilitado`.
 
 ### 7.2 ft-crm en modo live
 
@@ -2198,6 +2288,8 @@ Variables del BFF (`src/lib/server/env.ts`; las `NEXT_PUBLIC_*` las lee `src/lib
 | Sesión revocada | Con un ADMIN, desactiva a otro usuario con sesión abierta | En su siguiente llamada, ese usuario vuelve a `/login?motivo=sesion`. |
 | Límite de login | Seis intentos con el mismo correo en 60 s | `Hiciste demasiados intentos…` |
 | Canal apagado | `WHATSAPP_ENABLED=false` y responde en una conversación de WhatsApp | El aviso de que WhatsApp no está habilitado (bk-crm responde 503 `WhatsApp no está habilitado`), no «sin conexión». |
+| Instagram sin token de envío | `INSTAGRAM_ENABLED=true` sin `INSTAGRAM_ACCESS_TOKEN` y responde en una conversación de Instagram | bk-crm responde 503 `El envío por Instagram no está configurado`: aviso de función apagada, no «sin conexión». |
+| Bytes en Instagram | Escribe en una conversación de Instagram un texto de menos de 1000 caracteres con muchas tildes o emojis (p. ej. 600 «á») | El contador cuenta bytes y no deja enviar más de 1000. Si llegara al backend, respondería 400 `Instagram admite hasta 1000 bytes por respuesta; las tildes y los emojis ocupan más de uno`. |
 | Samanta apagada | `SAMANTA_ENABLED=false` y pulsa «Generar» | Aviso de `Samanta está desactivada` y el botón deshabilitado. |
 | Backend caído | Detén bk-crm | `/api/listo` da 503. Las vistas muestran «No se pudo cargar» o conservan sus datos con un aviso, sin mostrar listas vacías. |
 | Restaurante sin configurar | Crea una solicitud antes de configurar | 409 `Configura el restaurante antes de crear solicitudes o reservas`, con enlace a Empresa. |
@@ -2214,8 +2306,9 @@ Sirven para separar un fallo del frontend de uno del backend: si Postman da la m
 | `messaging-postman.md` | Conversaciones, mensajes, lectura, pausa y asignación; script de demostración |
 | `whatsapp-postman.md` | WhatsApp Cloud API: webhook, envío y estados |
 | `messenger-postman.md` | Activación y prueba controlada de Messenger |
+| `instagram-webhook.md` | Activación del webhook de Instagram y respuestas desde el CRM |
 | `samanta-postman.md` | Borradores de Samanta |
 | `redis-docker.md` | Redis local para los workers |
 
 - Algunas guías son anteriores a los cambios del 3/11. Si contradicen esta carpeta, sigue esta carpeta y avisa al equipo de backend.
-- Con credenciales reales de WhatsApp o Messenger, enviar desde la Bandeja manda mensajes reales. Usa un número o una página de prueba.
+- Con credenciales reales de WhatsApp, Messenger o Instagram, enviar desde la Bandeja manda mensajes reales. Usa un número, una página o una cuenta de Instagram de prueba. Con acceso estándar, Meta solo entrega en Instagram a cuentas con un rol en la app.

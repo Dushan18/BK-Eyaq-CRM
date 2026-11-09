@@ -1,6 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma/client';
+import { CRM_NOTE } from '../common/crm-note';
 
 const KNOWLEDGE_LIMIT = 32000;
 const CONTEXT_LIMIT = 48000;
@@ -8,6 +9,26 @@ const CATALOGUE_SIZE = 30;
 const HISTORY_SIZE = 20;
 const bytes = (value: unknown) =>
   Buffer.byteLength(JSON.stringify(value), 'utf8');
+// An open request without a date stops being "pending" after this.
+const PENDING_UNDATED_MS = 30 * 24 * 60 * 60 * 1000;
+
+// What a member of the public typed in the web form (preference and message), as data
+// for the model: without the CRM's own notes, links, emails or phone numbers, so the
+// form cannot make Samanta repeat them to whoever owns the number it gave.
+export function formNotes(...parts: (string | null)[]) {
+  const text = parts
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 1000)
+    .split('\n')
+    .filter((line) => !line.startsWith(CRM_NOTE))
+    .join('\n')
+    .replace(/\b(?:https?:\/\/|www\.)\S*/gi, '[enlace]')
+    .replace(/[^\s@]+@[^\s@]+/g, '[correo]')
+    .replace(/\+?\d[\d\s().-]{5,}\d/g, '[número]')
+    .trim();
+  return text ? text.slice(0, 300) : null;
+}
 
 // "2026-11-08 21:30" and "domingo" in the restaurant's time zone.
 export function localTime(date: Date, timeZone: string) {
@@ -183,8 +204,59 @@ export class SamantaContextService {
       where: { id: conversationId },
       select: {
         channel: true,
+        customerId: true,
         customer: { select: { firstName: true, lastName: true } },
       },
+    });
+    const now = new Date();
+    // Requests the customer already made (e.g. on the website): Samanta confirms them
+    // instead of asking for the data again. Only open ones without a reservation yet,
+    // not in the past; one without a date only while it is recent.
+    const pending = await tx.reservationRequest.findMany({
+      where: {
+        customerId: conversation.customerId,
+        status: {
+          in: [
+            'INCOMPLETE_DATA',
+            'READY_TO_SEND',
+            'SENT_TO_OWNER',
+            'WAITING_RESPONSE',
+            'MODIFICATION_REQUESTED',
+            'RENEGOTIATING',
+          ],
+        },
+        reservation: { is: null },
+        OR: [
+          { reservationAt: { gt: now } },
+          {
+            reservationAt: null,
+            createdAt: { gte: new Date(now.getTime() - PENDING_UNDATED_MS) },
+          },
+        ],
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 3,
+      select: {
+        code: true,
+        externalReference: true,
+        sourceChannel: true,
+        reservationAt: true,
+        numberOfPeople: true,
+        specialRequirements: true,
+        comments: true,
+      },
+    });
+    // Reservations the restaurant already confirmed: a request for the same date is
+    // confirmed, not pending.
+    const upcoming = await tx.reservation.findMany({
+      where: {
+        customerId: conversation.customerId,
+        status: { in: ['CONFIRMED', 'UPCOMING', 'RESCHEDULED'] },
+        reservationAt: { gt: now },
+      },
+      orderBy: [{ reservationAt: 'asc' }, { id: 'asc' }],
+      take: 3,
+      select: { code: true, reservationAt: true, numberOfPeople: true },
     });
     const history = await tx.message.findMany({
       where: {
@@ -207,19 +279,39 @@ export class SamantaContextService {
         createdAt: true,
       },
     });
-    const now = new Date();
     const name = [
       conversation.customer.firstName,
       conversation.customer.lastName,
     ]
       .filter(Boolean)
       .join(' ');
-    // Only the customer's name: no phone, email, internal notes or other conversations.
+    // Only the customer's name and open requests: no phone, email, internal notes or
+    // other conversations.
     const context = {
       ...knowledge.data,
       now: { utc: now.toISOString(), timeZone, ...localTime(now, timeZone) },
       reply: { channel: conversation.channel, maxCharacters },
-      customer: { name: name || null },
+      customer: {
+        name: name || null,
+        pendingReservations: pending.map((request) => ({
+          code: request.externalReference ?? request.code,
+          channel: request.sourceChannel,
+          at: request.reservationAt
+            ? localTime(request.reservationAt, timeZone)
+            : null,
+          people: request.numberOfPeople,
+          // Staff notes are internal; only what the customer typed in the web form.
+          formNotes:
+            request.sourceChannel === 'WEBSITE'
+              ? formNotes(request.specialRequirements, request.comments)
+              : null,
+        })),
+        upcomingReservations: upcoming.map((reservation) => ({
+          code: reservation.code,
+          at: localTime(reservation.reservationAt, timeZone),
+          people: reservation.numberOfPeople,
+        })),
+      },
       history: history.reverse().map((row) => ({
         direction: row.direction,
         type: row.type,

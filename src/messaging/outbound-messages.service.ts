@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma/client';
+import type { ContactChannel } from '../../generated/prisma/enums';
 import { MessagingTransactionService } from './messaging-transaction.service';
 import { messageSelect } from './messaging.select';
 import {
@@ -22,11 +23,15 @@ import {
   isRetryableSendError,
   type ChannelAddress,
   type ChannelTransport,
+  type OutboundTemplate,
 } from './channel-transport';
 import { AssistantBridge } from './assistant-bridge';
 
 // Meta's customer service window, shared by WhatsApp and Messenger.
 export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// A template still queued after this (outbox or channel down) is about something that
+// already happened: it fails instead of reaching the customer late.
+export const TEMPLATE_TTL_MS = 6 * 60 * 60 * 1000;
 const hasAddress = (address: ChannelAddress) =>
   !!address.recipientPhone || !!address.recipientExternalId;
 @Injectable()
@@ -103,6 +108,113 @@ export class OutboundMessagesService {
           status: 'QUEUED',
           type: dto.type,
           content: dto.content,
+          authorUserId,
+          idempotencyKey: key,
+          recipientPhone: recipient.recipientPhone,
+          recipientExternalId: recipient.recipientExternalId,
+          providerAccountId: transport.providerAccountId,
+          outbox: { create: {} },
+        },
+        select: messageSelect,
+      });
+    };
+    return transaction
+      ? enqueue(transaction)
+      : this.transactions.run(enqueue, true);
+  }
+  // Whether a template could be queued on this channel right now.
+  canSendTemplates(channel: ContactChannel) {
+    const transport = this.transports.find(channel);
+    return !!transport?.sendTemplate && transport.enabled;
+  }
+  // Business-initiated template (WhatsApp): the one message allowed with the 24-hour window
+  // closed, so there is no window check. It goes to the phone the customer gave us; `content`
+  // is the CRM's rendering of the template for the history.
+  async queueTemplateMessage(
+    conversationId: string,
+    authorUserId: string,
+    key: string,
+    template: OutboundTemplate & { content: string },
+    transaction?: Prisma.TransactionClient,
+  ) {
+    if (!/^[a-zA-Z0-9_-]{16,80}$/.test(key))
+      throw new BadRequestException(
+        'Idempotency-Key debe contener 16 a 80 caracteres alfanuméricos, guion o guion bajo',
+      );
+    const enqueue = async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.message.findUnique({
+        where: {
+          conversationId_idempotencyKey: {
+            conversationId,
+            idempotencyKey: key,
+          },
+        },
+        select: { ...messageSelect, templateParameters: true },
+      });
+      if (existing) {
+        const { templateParameters, ...message } = existing;
+        if (
+          existing.authorUserId !== authorUserId ||
+          existing.templateName !== template.name ||
+          templateParameters.join('\u0000') !==
+            template.parameters.join('\u0000')
+        )
+          throw new ConflictException(
+            'Idempotency-Key ya utilizada con otros datos',
+          );
+        return message;
+      }
+      const conversation = await tx.conversation.findUnique({
+        where: { id: conversationId },
+        include: {
+          customer: {
+            select: {
+              normalizedPhone: true,
+              providerAccountId: true,
+              externalContactId: true,
+              whatsappUserId: true,
+            },
+          },
+        },
+      });
+      if (!conversation)
+        throw new NotFoundException('Conversación no encontrada');
+      const transport = this.transports.find(conversation.channel);
+      if (!transport?.sendTemplate)
+        throw new BadRequestException('El canal no admite plantillas');
+      transport.assertEnabled();
+      const candidates = transport.recipientOf(conversation.customer);
+      const recipient: ChannelAddress | null = candidates?.recipientPhone
+        ? {
+            recipientPhone: candidates.recipientPhone,
+            recipientExternalId: null,
+          }
+        : candidates?.recipientExternalId
+          ? {
+              recipientPhone: null,
+              recipientExternalId: candidates.recipientExternalId,
+            }
+          : null;
+      if (!recipient)
+        throw new BadRequestException(
+          'Conversación sin destinatario habilitado',
+        );
+      const current = await tx.conversation.update({
+        where: { id: conversationId },
+        data: { lastSequence: { increment: 1 }, lastMessageAt: new Date() },
+      });
+      return tx.message.create({
+        data: {
+          conversationId,
+          channel: transport.channel,
+          sequence: current.lastSequence,
+          direction: 'OUTBOUND',
+          status: 'QUEUED',
+          type: 'TEXT',
+          content: template.content,
+          templateName: template.name,
+          templateLanguage: template.language,
+          templateParameters: template.parameters,
           authorUserId,
           idempotencyKey: key,
           recipientPhone: recipient.recipientPhone,
@@ -268,6 +380,7 @@ export class OutboundMessagesService {
         recipientPhone: message.recipientPhone,
         recipientExternalId: message.recipientExternalId,
       };
+      const isTemplate = message.templateName !== null;
       if (
         !transport ||
         message.processingAttempts >= MESSAGE_ATTEMPTS ||
@@ -275,12 +388,27 @@ export class OutboundMessagesService {
         !message.content ||
         !hasAddress(recipient) ||
         exceedsTextLimit(transport, message.content) ||
-        message.providerAccountId !== transport.providerAccountId
+        message.providerAccountId !== transport.providerAccountId ||
+        (isTemplate && (!transport.sendTemplate || !message.templateLanguage))
       ) {
         await this.finish(tx, messageId, 'FAILED', `${prefix}_SEND_INVALID`);
         return 'terminal' as const;
       }
       if (
+        isTemplate &&
+        message.createdAt.getTime() < Date.now() - TEMPLATE_TTL_MS
+      ) {
+        await this.finish(
+          tx,
+          messageId,
+          'FAILED',
+          `${prefix}_TEMPLATE_EXPIRED`,
+        );
+        return 'terminal' as const;
+      }
+      // A template is exactly what Meta allows with the window closed.
+      if (
+        !isTemplate &&
         !(await this.windowOpen(
           tx,
           message.conversationId,
@@ -308,14 +436,19 @@ export class OutboundMessagesService {
     // Never include the external POST inside a retried database transaction.
     let externalMessageId: string | undefined;
     let failure: ChannelSendError | undefined;
+    const address: ChannelAddress = {
+      recipientPhone: claimed.recipientPhone,
+      recipientExternalId: claimed.recipientExternalId,
+    };
     try {
-      externalMessageId = await transport.sendMessage(
-        {
-          recipientPhone: claimed.recipientPhone,
-          recipientExternalId: claimed.recipientExternalId,
-        },
-        claimed.content!,
-      );
+      externalMessageId =
+        claimed.templateName !== null && transport.sendTemplate
+          ? await transport.sendTemplate(address, {
+              name: claimed.templateName,
+              language: claimed.templateLanguage!,
+              parameters: claimed.templateParameters,
+            })
+          : await transport.sendMessage(address, claimed.content!);
     } catch (error) {
       failure =
         error instanceof ChannelSendError

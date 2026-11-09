@@ -580,7 +580,10 @@ Variables de producción:
 - `TRUST_PROXY`: solo si el backend queda detrás de un proxy inverso que envía `X-Forwarded-For` (p. ej. `1`). Los límites de intentos de login y recuperación de contraseña cuentan por IP y por cuenta.
 - WhatsApp, Messenger y Samanta: las variables de sus secciones, con la URL pública de cada webhook.
 
-Despliegue:
+Despliegue en un VPS con Dokploy (imagen Docker que aplica las migraciones al arrancar): ver
+[docs/despliegue-dokploy.md](docs/despliegue-dokploy.md).
+
+Despliegue manual:
 
 1. `npm ci` y `npm run build`.
 2. Con el backend detenido, `npx prisma migrate deploy`. La migración `20261103000000_utc_timestamps` corrige las fechas que se guardaron desplazadas en sesiones de PostgreSQL fuera de UTC; en una base nueva o configurada en UTC no cambia nada.
@@ -694,6 +697,76 @@ Instagram (`SAMANTA_AUTO_CHANNELS`). Funciona así:
 Requiere `MESSAGING_ENABLED=true` y la migración `20261108000000_samanta_auto`,
 que es aditiva y crea el usuario de sistema. Samanta no confirma reservas: las
 transfiere a una persona.
+
+## Reservas de la web desde el correo
+
+El formulario de la web envía un correo «Nueva reserva SM-…» al buzón del restaurante.
+Con `EMAIL_ENABLED=true`, el backend lee ese buzón por IMAP cada `EMAIL_POLL_SECONDS`.
+La lectura es de solo lectura: abre con `EXAMINE` y lee con `BODY.PEEK`, así que los
+correos siguen sin leer en el webmail. Solo se descargan los correos con ese asunto que
+vienen de un remitente de `WEB_RESERVATION_SENDERS`.
+
+1. **Importación.** Cada aviso se convierte en una solicitud de reserva con el código de
+   la web en `externalReference` y la hora interpretada en la zona del restaurante.
+   - **Cliente:** se reconoce por el WhatsApp del formulario y, si no trae uno válido,
+     por el correo. Un número nacional («987 654 321») se lee con el «País» del
+     formulario. Si no existe, se crea con canal `WEBSITE`.
+   - **El formulario no es una prueba de identidad:** nunca agrega un teléfono, un correo
+     ni un nombre a un cliente existente. Si el correo ya pertenece a otro cliente, se
+     crea un cliente nuevo con el WhatsApp del formulario.
+   - **Lo que no encaja** queda en los comentarios de la solicitud, en líneas que
+     empiezan con `CRM:`: un número sin validar, un correo de otro cliente o por qué no
+     se le escribió. Una fecha, hora o cantidad que no se entiende se copia tal cual y la
+     solicitud queda incompleta.
+   - El mismo código nunca crea dos solicitudes, y las reservas con fecha pasada se
+     registran sin solicitud.
+   - El resultado de cada correo queda en `inbound_emails`, y el avance del buzón en
+     `mailbox_cursors`.
+2. **Contacto por WhatsApp** (`WEB_RESERVATION_WHATSAPP=true`), solo al número del
+   formulario:
+   - si el cliente escribió en las últimas 24 h, recibe un mensaje normal;
+   - si no, recibe la plantilla `WEB_RESERVATION_TEMPLATE`, aprobada en Meta y cobrada
+     por envío: una como máximo cada 24 h por cliente y hasta
+     `WEB_RESERVATION_DAILY_LIMIT` al día. Si pasan 6 h en cola sin poder enviarse
+     (WhatsApp o Redis caídos), se descarta (`WHATSAPP_TEMPLATE_EXPIRED`).
+
+   No se le escribe, y queda la nota `CRM:` en la solicitud, cuando el aviso tiene más de
+   `WEB_RESERVATION_CONTACT_MAX_HOURS` (24 h), como los de antes de activar la lectura.
+   Tampoco cuando una persona atiende su conversación (pausa manual o de las últimas
+   24 h) ni cuando el cliente está escribiendo por WhatsApp en ese momento. En ese caso
+   Samanta o el equipo le responden con la solicitud ya en su contexto.
+
+   Cuando el cliente responde, también con un botón de la plantilla, Samanta continúa
+   con la solicitud cargada, sin volver a pedir los datos. Solo si el modo automático
+   está activo para WhatsApp (`SAMANTA_AUTO_ENABLED=true` y `SAMANTA_AUTO_SEND=true`);
+   si no, la respuesta espera en la Bandeja.
+3. **Protecciones.**
+   - **Remitente verificado:** el «De» de un correo se puede falsificar. Con
+     `WEB_RESERVATION_HOSTING_ACCOUNT`, solo cuentan los avisos que el servidor de correo
+     recibió de esa cuenta del hosting, es decir, del PHP de la web: la línea
+     `Received: from <cuenta> by <servidor> with local`, que agrega el propio servidor y
+     nadie puede falsificar. Los demás quedan como `SENDER_NOT_VERIFIED`. Si la web
+     cambia su forma de enviar correo (por ejemplo, a SMTP), hay que revisarlo.
+   - Los correos de más de 256 KB no se descargan (`EMAIL_TOO_LARGE`). El análisis del
+     correo es lineal y acotado: ningún correo puede bloquear el servidor.
+   - Un correo que falla 5 lecturas seguidas se registra como `EMAIL_UNSTORABLE` y la
+     lectura sigue con los demás.
+   - Si el servidor rechaza la contraseña (`EMAIL_AUTH_FAILED` en el log), se reintenta
+     a los 30 min, 2 h y 6 h, porque cPanel bloquea la IP tras varios intentos fallidos.
+     Un rechazo temporal (`[UNAVAILABLE]`) se reintenta a los 5 min.
+   - Con `EMAIL_IMAP_SECURE=false`, STARTTLS es obligatorio: la contraseña nunca viaja
+     sin cifrar.
+
+Plantilla que hay que crear en WhatsApp Manager (categoría Utilidad, idioma `es`,
+variables de tipo Número):
+
+```text
+Hola {{1}}, recibimos tu solicitud de reserva {{2}} en Sabor Mágico Grill para el {{3}} a las {{4}}, {{5}} personas. ¿Continuamos por aquí para confirmarla?
+```
+
+Botones de respuesta rápida: «Sí, continuar» y «Cambiar datos». Los parámetros son,
+en orden: nombre, código de la web, fecha, hora y personas. Requiere la migración
+`20261109000000_web_reservations_email`, que es aditiva.
 
 ## Redis local con Docker
 
