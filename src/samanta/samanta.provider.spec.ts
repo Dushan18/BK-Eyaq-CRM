@@ -7,11 +7,21 @@ import {
   SamantaProviderError,
 } from './samanta.provider';
 
+const none = {
+  action: 'NONE',
+  language: 'es',
+  date: null,
+  time: null,
+  people: null,
+  service: null,
+  specialRequirements: null,
+};
 const draft = {
   content: '¿Para qué fecha deseas reservar?',
   intent: 'RESERVATION',
   requiresHuman: true,
   missingFields: ['fecha'],
+  reservation: none,
 };
 const response = (data: unknown = draft) => ({
   status: 'completed',
@@ -224,6 +234,157 @@ describe('Samanta: proveedor y configuración sin llamadas reales', () => {
     expect(draftBody.instructions).toContain('borrador');
     expect(autoBody.instructions).toContain('se envía directamente al cliente');
     expect(autoBody.instructions).toContain('reply.maxCharacters');
+  });
+  it('M8.2: el modo automático propone y confirma solicitudes en vez de transferir al confirmar', async () => {
+    const fetcher = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify(response()))),
+      );
+    const provider = new SamantaProvider(config());
+    await provider.generate('{}', 'draft');
+    await provider.generate('{}', 'auto');
+    const [draftBody, autoBody] = fetcher.mock.calls.map(
+      ([, options]) =>
+        JSON.parse(options?.body as string) as {
+          instructions: string;
+          text: {
+            format: {
+              schema: {
+                required: string[];
+                properties: {
+                  reservation: {
+                    required: string[];
+                    additionalProperties: boolean;
+                  };
+                };
+              };
+            };
+          };
+        },
+    );
+    expect(draftBody.instructions).toContain(
+      'reservation.action siempre es "NONE"',
+    );
+    expect(autoBody.instructions).toContain('"PROPOSE"');
+    expect(autoBody.instructions).toContain('customer.awaitingConfirmation');
+    expect(autoBody.instructions).toContain(
+      'nunca digas que la reserva está confirmada',
+    );
+    // A confirmed summary is no longer a reason to hand the conversation over.
+    expect(autoBody.instructions).not.toContain(
+      'cuando el cliente confirme los datos completos de su reserva',
+    );
+    const { schema } = autoBody.text.format;
+    expect(schema.required).toContain('reservation');
+    expect(schema.properties.reservation).toMatchObject({
+      additionalProperties: false,
+      required: [
+        'action',
+        'language',
+        'date',
+        'time',
+        'people',
+        'service',
+        'specialRequirements',
+      ],
+    });
+  });
+  it('M8.2: interpreta la acción de reserva propuesta', () => {
+    const reservation = {
+      action: 'PROPOSE',
+      language: 'en',
+      date: '2026-11-20',
+      time: '19:00',
+      people: 4,
+      service: 'Menú degustación',
+      specialRequirements: 'Mesa en terraza',
+    };
+    expect(
+      parseDraftResponse(response({ ...draft, reservation })).reservation,
+    ).toEqual(reservation);
+  });
+  it.each([
+    { reservation: undefined },
+    { reservation: null },
+    { reservation: { ...none, action: 'CREATE' } },
+    { reservation: { ...none, language: 'fr' } },
+    { reservation: { ...none, people: 2.5 } },
+    { reservation: { ...none, people: '4' } },
+    { reservation: { ...none, date: '2026-11-20T19:00' } },
+    { reservation: { ...none, service: 'x'.repeat(201) } },
+    { reservation: { ...none, specialRequirements: 'a\u0000b' } },
+    { reservation: { ...none, extra: true } },
+  ])('M8.2: rechaza una acción de reserva mal formada %#', (body) => {
+    expect(() => parseDraftResponse(response({ ...draft, ...body }))).toThrow(
+      'AI_INVALID_RESPONSE',
+    );
+  });
+  it('el prompt pide content no vacío también en PROPOSE y CONFIRM', async () => {
+    const fetcher = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify(response())));
+    await new SamantaProvider(config()).generate('{}', 'auto');
+    const { instructions } = JSON.parse(
+      fetcher.mock.calls[0][1]?.body as string,
+    ) as { instructions: string };
+    expect(instructions).toContain('nunca vacío');
+    expect(instructions).toContain(
+      'En las tres acciones content nunca va vacío',
+    );
+  });
+  describe('content vacío (OpenAI lo deja así cuando el backend escribe la respuesta)', () => {
+    const propose = {
+      ...none,
+      action: 'PROPOSE',
+      date: '2026-11-20',
+      time: '19:30',
+      people: 4,
+    };
+    it.each([
+      ['PROPOSE con datos válidos', propose, ''],
+      ['CONFIRM', { ...none, action: 'CONFIRM' }, '   '],
+    ])('%s: se acepta y queda como ""', (_name, reservation, content) => {
+      const parsed = parseDraftResponse(
+        response({ ...draft, requiresHuman: false, content, reservation }),
+      );
+      expect(parsed.content).toBe('');
+      expect(parsed.reservation).toEqual(reservation);
+    });
+    it('con requiresHuman también se acepta (el backend pone el texto de respaldo)', () => {
+      expect(
+        parseDraftResponse(
+          response({ ...draft, content: '', reservation: propose }),
+        ),
+      ).toMatchObject({ content: '', requiresHuman: true });
+    });
+    it.each([
+      ['NONE vacío', { content: '', reservation: none }],
+      ['NONE solo espacios', { content: ' \n\t', reservation: none }],
+      ['sin reservation', { content: '', reservation: undefined }],
+      [
+        'acción inválida',
+        { content: '', reservation: { ...propose, action: 'CREATE' } },
+      ],
+      [
+        'idioma inválido',
+        { content: '', reservation: { ...propose, language: 'fr' } },
+      ],
+      [
+        'personas no enteras',
+        { content: '', reservation: { ...propose, people: 2.5 } },
+      ],
+      [
+        'intent inválido',
+        { content: '', intent: 'EXECUTE', reservation: propose },
+      ],
+      ['campo extra', { content: '', reservation: propose, confirmed: true }],
+      ['content no es texto', { content: null, reservation: propose }],
+    ])('%s: sigue siendo AI_INVALID_RESPONSE', (_name, body) => {
+      expect(() => parseDraftResponse(response({ ...draft, ...body }))).toThrow(
+        'AI_INVALID_RESPONSE',
+      );
+    });
   });
   it.each([
     [401, 'invalid_api_key', 'AI_AUTH_FAILED'],

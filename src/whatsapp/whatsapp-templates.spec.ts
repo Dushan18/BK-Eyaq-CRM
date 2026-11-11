@@ -163,4 +163,37 @@ describe('WhatsApp: plantillas y respuestas con botones', () => {
     ).messages;
     expect(command.type).toBe('OTHER');
   });
+  it('M9.2: un botón conserva el mensaje que responde (context.id) y se marca como botón', () => {
+    const [command] = adapter().parse(
+      event({
+        type: 'button',
+        button: { text: 'Aceptar', payload: 'Aceptar' },
+        context: { from: '51900000000', id: 'wamid.plantilla-dueno' },
+      }),
+    ).messages;
+    expect(command).toMatchObject({
+      type: 'TEXT',
+      content: 'Aceptar',
+      buttonReply: true,
+      replyToExternalMessageId: 'wamid.plantilla-dueno',
+    });
+  });
+  it('M9.2: un texto citado conserva context.id pero no es un botón', () => {
+    const [command] = adapter().parse(
+      event({
+        type: 'text',
+        text: { body: 'Aceptar' },
+        context: { id: 'wamid.citado' },
+      }),
+    ).messages;
+    expect(command).toMatchObject({
+      type: 'TEXT',
+      replyToExternalMessageId: 'wamid.citado',
+    });
+    expect(command.buttonReply).toBeUndefined();
+    const [plain] = adapter().parse(
+      event({ type: 'text', text: { body: 'Hola' }, context: undefined }),
+    ).messages;
+    expect(plain.replyToExternalMessageId).toBeUndefined();
+  });
 });

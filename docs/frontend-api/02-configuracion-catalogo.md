@@ -123,6 +123,7 @@ No tiene parámetros de ruta, query ni body. Si se envía query, se ignora.
   "latitude": -12.0951234,
   "longitude": -77.0345678,
   "whatsappNumber": "+51987654321",
+  "ownerWhatsappNumber": "+51912345678",
   "email": "reservas@example.com",
   "website": "https://www.example.com",
   "currency": "PEN",
@@ -172,7 +173,7 @@ Ninguno (solo lectura).
 - `latitude` y `longitude` son `number` o `null`, nunca strings.
 - `approvalResponsible` solo trae `id`, `firstName`, `lastName` y `email`, y es `null` si no hay responsable. OWNER y OPERATOR solo pueden ver su nombre aquí, porque `GET /users` es solo para ADMIN.
 - Sin configuración fallan otras rutas: crear solicitudes o reservas responde 409 `Configura el restaurante antes de crear solicitudes o reservas`, y generar un borrador de Samanta responde 409 `Configura el restaurante antes de usar Samanta`.
-- Hoy ningún proceso del backend usa `logoUrl`, `website`, `latitude`, `longitude`, `whatsappNumber`, `email`, `responseTimeoutMinutes` ni `approvalResponsibleId`: se guardan y se devuelven solo para la UI.
+- Hoy ningún proceso del backend usa `logoUrl`, `website`, `latitude`, `longitude`, `whatsappNumber`, `email` ni `responseTimeoutMinutes`: se guardan y se devuelven solo para la UI. Desde el 10/11, el envío de solicitudes al propietario (M9.1) usa `ownerWhatsappNumber` y exige `approvalResponsibleId` (un usuario OWNER): sin los dos, no se envía nada.
 
 ## Guardar la configuración del restaurante (crear o reemplazar)
 `PUT /restaurant-config`
@@ -197,6 +198,7 @@ Es un reemplazo completo: cada PUT envía la configuración entera.
 | `latitude` | number \| null | Junto con `longitude` | Número JSON (un string da 400), finito, con hasta 7 decimales, de −90 a 90. Si envías una coordenada, la otra es obligatoria. Las dos omitidas o `null` → sin coordenadas. |
 | `longitude` | number \| null | Junto con `latitude` | Número JSON, finito, con hasta 7 decimales, de −180 a 180. |
 | `whatsappNumber` | string | Sí | Se recorta. Formato E.164: `+`, un primer dígito de 1 a 9 y de 8 a 15 dígitos en total, sin espacios ni guiones (`^\+[1-9]\d{7,14}$`, p. ej. `+51987654321`). Máx. 16. |
+| `ownerWhatsappNumber` | string \| null | No | Desde el 10/11 (M9.1). WhatsApp **personal** del propietario, adonde se le envían las solicitudes para aprobar. Mismo formato E.164 y distinto de `whatsappNumber`. **Si lo omites, se conserva el valor guardado** (a diferencia de los demás opcionales); `null` lo borra y deja de enviar solicitudes al propietario. |
 | `email` | string | Sí | Se recorta y pasa a minúsculas antes de validar. Email válido. El DTO declara un máximo de 320, pero el validador rechaza más de 254 caracteres (o más de 64 antes de la `@`). |
 | `website` | string \| null | No | Mismas reglas que `logoUrl`. |
 | `currency` | `CurrencyCode` | Sí | `PEN` o `USD`, en mayúsculas. |
@@ -238,6 +240,7 @@ queryClient.setQueryData(qk.config, saved);
   "latitude": -12.0951234,
   "longitude": -77.0345678,
   "whatsappNumber": "+51987654321",
+  "ownerWhatsappNumber": "+51912345678",
   "email": "reservas@example.com",
   "website": "https://www.example.com",
   "currency": "PEN",
@@ -266,6 +269,7 @@ La primera configuración (formulario inicial, `mode: "create"`) también es un 
   "businessName": "Fogón Andino",
   "address": "Calle Las Begonias 120, San Isidro, Lima",
   "whatsappNumber": "+51987654321",
+  "ownerWhatsappNumber": "+51912345678",
   "email": " Reservas@Example.com ",
   "currency": "PEN",
   "timeZone": "America/Lima",
@@ -301,6 +305,7 @@ La respuesta al ejemplo de la pestaña Políticas: lo guardado, con los textos r
   "latitude": -12.0951234,
   "longitude": -77.0345678,
   "whatsappNumber": "+51987654321",
+  "ownerWhatsappNumber": "+51912345678",
   "email": "reservas@example.com",
   "website": "https://www.example.com",
   "currency": "PEN",
@@ -345,6 +350,8 @@ Los errores de validación llegan juntos en el array `message`; casi todos empie
 | 400 | `latitude must be a number conforming to the specified constraints` · `latitude must not be less than -90` · `latitude must not be greater than 90` | Se envió `longitude` sin `latitude` (salen los tres), o `latitude` es un string, tiene más de 7 decimales o está fuera de rango. |
 | 400 | `longitude must be a number conforming to the specified constraints` · `longitude must not be less than -180` · `longitude must not be greater than 180` | Lo mismo con `longitude`. |
 | 400 | `whatsappNumber must be a string` · `whatsappNumber debe usar formato internacional E.164` · `whatsappNumber must be shorter than or equal to 16 characters` | No es string o no cumple E.164 (espacios, guiones, sin `+`, longitud). |
+| 400 | `ownerWhatsappNumber must be a string` · `ownerWhatsappNumber debe usar formato internacional E.164` · `ownerWhatsappNumber must be shorter than or equal to 16 characters` | Lo mismo con `ownerWhatsappNumber`. |
+| 400 | `ownerWhatsappNumber debe ser distinto de whatsappNumber` | El número del propietario es el del negocio: el negocio no puede escribirse a sí mismo. |
 | 400 | `email must be an email` · `email must be shorter than or equal to 320 characters` | Email inválido, también si pasa de 254 caracteres o de 64 antes de la `@`. |
 | 400 | `currency must be one of the following values: PEN, USD` | Falta o tiene otro valor. |
 | 400 | `timeZone must be a string` · `timeZone should not be empty` · `timeZone must be a valid IANA time-zone` · `timeZone must be shorter than or equal to 64 characters` | Falta, está vacía, `Intl` no la reconoce o pasa de 64. |
@@ -1933,6 +1940,7 @@ Lo devuelven `GET` y `PUT /restaurant-config`.
 | `latitude` | number | Sí | Latitud con hasta 7 decimales. `null` junto con `longitude`. |
 | `longitude` | number | Sí | Longitud con hasta 7 decimales. |
 | `whatsappNumber` | string | No | Número del negocio en E.164 (`+51987654321`). Solo informativo. |
+| `ownerWhatsappNumber` | string | Sí | Desde el 10/11: WhatsApp personal del propietario en E.164, al que se envían las solicitudes para aprobar ([03 › Envío al WhatsApp del propietario](03-clientes-reservas.md#envío-al-whatsapp-del-propietario)). `null` si no está configurado. |
 | `email` | string | No | Correo de contacto, en minúsculas. |
 | `website` | string | Sí | Sitio web (http/https). |
 | `currency` | `CurrencyCode` | No | Moneda del restaurante. |
@@ -2162,7 +2170,7 @@ No tiene estados: existe (200) o no existe (404). El primer `PUT /restaurant-con
 3. **Búsqueda sin tildes:** `GET /commercial-items?search=` usa `contains` sin distinguir mayúsculas (ILIKE), pero sí distingue tildes: `cafe` no encuentra `Café`. ¿Se necesita una búsqueda insensible a tildes?
 4. **Categorías inactivas en solicitudes y reservas:** desactivar una categoría oculta sus elementos a Samanta e impide aprobarlos, pero las solicitudes y reservas siguen aceptando sus elementos activos y aprobados. ¿Es intencional, o el backend también debería rechazarlos?
 5. **Qué elementos ve Samanta:** recibe como máximo 30 elementos (por `displayOrder` e `id`, sin agrupar por categoría), con hasta 10 variantes activas y 10 FAQs cada uno. Ninguna ruta indica cuáles entran. ¿Se expondrá esa lista o un aviso de que el catálogo supera el límite?
-6. **Campos sin uso:** `responseTimeoutMinutes` y `approvalResponsibleId` se guardan, pero ningún proceso del backend los usa (tampoco `whatsappNumber`, `logoUrl`, `website`, `email` ni las coordenadas). ¿Qué flujo los usará (p. ej. la aprobación del dueño) y qué debe mostrar hoy la UI?
+6. **Campos sin uso:** `responseTimeoutMinutes` se guarda, pero ningún proceso del backend lo usa; `approvalResponsibleId` lo usa desde el 10/11 el envío al propietario (M9.1) (tampoco `whatsappNumber`, `logoUrl`, `website`, `email` ni las coordenadas). ¿Qué flujo los usará (p. ej. la aprobación del dueño) y qué debe mostrar hoy la UI?
 7. **Coordenadas muy pequeñas:** una `latitude` o `longitude` distinta de 0 con valor absoluto menor que 0,000001 que JavaScript escribe sin punto decimal (`1e-7`) provoca un 500 en la validación; con punto (`1.5e-7`) pasa aunque tenga más de 7 decimales. ¿Se corregirá en el backend? Mientras tanto, ft-crm las redondea (`normalizeCoordinate()`).
 8. **Concurrencia:** `PUT /restaurant-config` y `PATCH /commercial-items/:id` no tienen control de versión: gana la última escritura. ¿Se añadirá una comprobación (p. ej. de `updatedAt`) para avisar de cambios simultáneos?
 9. **Borrado:** no hay `DELETE` de categorías ni de elementos; solo se desactivan. ¿Es definitivo?
@@ -2281,6 +2289,8 @@ export interface RestaurantConfig {
   longitude: number | null;
   /** E.164: "+51987654321" */
   whatsappNumber: string;
+  /** WhatsApp personal del propietario para aprobar solicitudes (10/11), E.164; null si no está configurado. */
+  ownerWhatsappNumber: string | null;
   /** En minúsculas. */
   email: string;
   website: string | null;
@@ -2325,6 +2335,8 @@ export interface PutRestaurantConfigRequest {
   longitude?: number | null;
   /** E.164 sin espacios. */
   whatsappNumber: string;
+  /** E.164, distinto de whatsappNumber. Omitir conserva el guardado; null lo borra (10/11). */
+  ownerWhatsappNumber?: string | null;
   /** Se guarda recortado y en minúsculas. Máx. efectivo 254. */
   email: string;
   /** Mismas reglas que logoUrl. */

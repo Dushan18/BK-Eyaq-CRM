@@ -2,6 +2,7 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma/client';
 import { CRM_NOTE } from '../common/crm-note';
+import { awaitingProposal } from './samanta-reservations';
 
 const KNOWLEDGE_LIMIT = 32000;
 const CONTEXT_LIMIT = 48000;
@@ -258,6 +259,18 @@ export class SamantaContextService {
       take: 3,
       select: { code: true, reservationAt: true, numberOfPeople: true },
     });
+    // A summary Samanta sent and the customer has not confirmed yet (M8.2).
+    const awaiting = await awaitingProposal(tx, conversationId, now);
+    const awaitingConfirmation =
+      awaiting && !awaiting.requestId && !awaiting.expired
+        ? {
+            date: awaiting.proposal.date,
+            time: awaiting.proposal.time,
+            people: awaiting.proposal.people,
+            service: awaiting.proposal.service,
+            specialRequirements: awaiting.proposal.specialRequirements,
+          }
+        : null;
     const history = await tx.message.findMany({
       where: {
         conversationId,
@@ -311,6 +324,7 @@ export class SamantaContextService {
           at: localTime(reservation.reservationAt, timeZone),
           people: reservation.numberOfPeople,
         })),
+        awaitingConfirmation,
       },
       history: history.reverse().map((row) => ({
         direction: row.direction,

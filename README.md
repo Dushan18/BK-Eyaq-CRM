@@ -768,6 +768,63 @@ Botones de respuesta rápida: «Sí, continuar» y «Cambiar datos». Los parám
 en orden: nombre, código de la web, fecha, hora y personas. Requiere la migración
 `20261109000000_web_reservations_email`, que es aditiva.
 
+## Aprobación del propietario por WhatsApp (M9)
+
+Las solicitudes de Samanta y de la web se envían al WhatsApp personal del propietario
+(M9.1). Sus respuestas «Aceptar», «Rechazar» o «Proponer cambio» se aplican solas
+(M9.2), y el backend avisa al cliente de la decisión (M9.3). Las tres partes usan el
+outbox, con sus reintentos e idempotencia. Detalle para el frontend en
+[docs/frontend-api/03](docs/frontend-api/03-clientes-reservas.md#envío-al-whatsapp-del-propietario).
+
+```env
+# M9.1: envío al propietario (apagado por defecto)
+OWNER_APPROVAL_ENABLED=false
+OWNER_APPROVAL_TEMPLATE=aprobacion_reserva_propietario
+OWNER_APPROVAL_TEMPLATE_LANGUAGE=es
+OWNER_APPROVAL_MAX_AGE_HOURS=24
+OWNER_APPROVAL_POLL_SECONDS=15
+# M9.3: plantillas de aviso al cliente con la ventana de 24 h cerrada (apagadas por defecto)
+CUSTOMER_DECISION_TEMPLATES_ENABLED=false
+CUSTOMER_DECISION_TEMPLATE_ACCEPTED=reserva_aprobada
+CUSTOMER_DECISION_TEMPLATE_REJECTED=reserva_no_aprobada
+CUSTOMER_DECISION_TEMPLATE_CHANGE=reserva_cambio_propuesto
+CUSTOMER_DECISION_TEMPLATE_LANGUAGE=es
+```
+
+En la configuración del restaurante también hacen falta `ownerWhatsappNumber` y
+`approvalResponsibleId`.
+
+**Aviso al cliente (M9.3).**
+- Se envía en la conversación de Samanta de la que salió la solicitud, o por WhatsApp
+  para las de la web.
+- Con la ventana de 24 h abierta, es un texto normal.
+- Con la ventana cerrada, solo sale por WhatsApp y como plantilla, si el cliente nos dio
+  ese número y las plantillas están activas.
+- Nunca se escribe en una conversación que atiende una persona.
+- El aviso de aceptación se encola en la transacción que crea la reserva `CONFIRMED`,
+  así que solo sale después del commit.
+- Si no se puede avisar, el motivo queda en `customerNoticeError` y en una nota `CRM:`
+  de la solicitud.
+
+Las decisiones tomadas en el CRM (`/approve`, `/reject`) no avisan solas.
+
+Plantillas que hay que crear en WhatsApp Manager (categoría Utilidad, idioma `es`):
+
+```text
+reserva_aprobada (7 variables):
+Hola {{1}}, ¡buenas noticias! {{2}} aprobó tu solicitud {{3}}. Tu reserva {{4}} está confirmada para el {{5}} a las {{6}}, {{7}}. ¡Te esperamos!
+
+reserva_no_aprobada (5 variables):
+Hola {{1}}, lo sentimos: {{2}} no pudo aprobar tu solicitud de reserva {{3}} para el {{4}} a las {{5}}. No se registró ninguna reserva. Si quieres buscar otra opción, responde a este mensaje.
+
+reserva_cambio_propuesto (5 variables):
+Hola {{1}}, {{2}} revisó tu solicitud de reserva {{3}} para el {{4}} a las {{5}} y propone un cambio. Una persona del equipo te escribirá por aquí para coordinarlo; por ahora la reserva no está confirmada.
+```
+
+Variables, en orden: nombre, restaurante, código de la solicitud, (código de la reserva),
+fecha `dd/mm/aaaa`, hora `hh:mm` y (personas, p. ej. «4 personas»). Requiere la
+migración `20261114000000_customer_decision_notice`, que es aditiva.
+
 ## Redis local con Docker
 
 El archivo `compose.yaml` levanta únicamente Redis para las colas de mensajería, con persistencia y puerto limitado a localhost. NestJS sigue ejecutándose con `npm run start:dev`. Consulta la [guía de instalación y verificación en Windows](docs/redis-docker.md).

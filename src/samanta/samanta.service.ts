@@ -30,6 +30,7 @@ import type {
 } from './samanta.dto';
 import {
   activeGeneration,
+  draftFields,
   latestActivity,
   utcDayStart,
 } from './samanta-drafts';
@@ -277,7 +278,7 @@ export class SamantaService {
       return tx.samantaDraft.update({
         where: { id: current.id },
         data: {
-          ...output,
+          ...draftFields(output),
           originalContent: output.content,
           status: validKnowledge ? 'READY' : 'STALE',
         },

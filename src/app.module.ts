@@ -20,6 +20,7 @@ import { SamantaModule } from './samanta/samanta.module';
 import { MessengerModule } from './messenger/messenger.module';
 import { InstagramModule } from './instagram/instagram.module';
 import { EmailModule } from './email/email.module';
+import { OwnerApprovalModule } from './owner-approval/owner-approval.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { EmailModule } from './email/email.module';
     InstagramModule,
     SamantaModule,
     EmailModule,
+    OwnerApprovalModule,
   ],
   controllers: [AppController],
   providers: [AppService],

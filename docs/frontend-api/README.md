@@ -1,7 +1,7 @@
 # API de bk-crm para el frontend
 
 > **Estado:** 3 de noviembre de 2026.
-> - bk-crm: rama `main`, commit `9538556` («Messenger»), más los cambios del 3/11 que aún no tienen commit (ver [Cambios recientes del backend](#cambios-recientes-del-backend-3112026)). El modo automático de Samanta (8/11) está en [Cambios del backend del 8/11/2026](#cambios-del-backend-del-8112026-samanta-automática), y las reservas de la web por correo (9/11), en [Cambios del backend del 9/11/2026](#cambios-del-backend-del-9112026-reservas-de-la-web-y-plantillas-de-whatsapp). El envío por Instagram, que bk-crm tiene desde el 4/11 (commit `eca059b`), se corrigió en esta carpeta el 8/11: ver [Correcciones respecto de la versión anterior](#correcciones-respecto-de-la-versión-anterior).
+> - bk-crm: rama `main`, commit `9538556` («Messenger»), más los cambios del 3/11 que aún no tienen commit (ver [Cambios recientes del backend](#cambios-recientes-del-backend-3112026)). El modo automático de Samanta (8/11) está en [Cambios del backend del 8/11/2026](#cambios-del-backend-del-8112026-samanta-automática), y las reservas de la web por correo (9/11), en [Cambios del backend del 9/11/2026](#cambios-del-backend-del-9112026-reservas-de-la-web-y-plantillas-de-whatsapp). La conversación vinculada y el historial de estados de las solicitudes (10/11) están en [Cambios del backend del 10/11/2026](#cambios-del-backend-del-10112026-conversación-e-historial-de-las-solicitudes), y las solicitudes que registra Samanta (M8.2), en [Cambios del backend del 10/11/2026 (M8.2)](#cambios-del-backend-del-10112026-m82-samanta-registra-solicitudes). La aprobación manual de solicitudes está en [Cambios del backend del 10/11/2026: aprobación manual](#cambios-del-backend-del-10112026-aprobación-manual-de-solicitudes), el envío al WhatsApp del propietario (M9.1), en [Cambios del backend del 10/11/2026 (M9.1)](#cambios-del-backend-del-10112026-m91-envío-de-solicitudes-al-whatsapp-del-propietario), sus respuestas (M9.2), en [Cambios del backend del 10/11/2026 (M9.2)](#cambios-del-backend-del-10112026-m92-respuestas-del-propietario-por-whatsapp), y el aviso al cliente de la decisión (M9.3), en [Cambios del backend del 10/11/2026 (M9.3)](#cambios-del-backend-del-10112026-m93-aviso-al-cliente-de-la-decisión-del-propietario). El envío por Instagram, que bk-crm tiene desde el 4/11 (commit `eca059b`), se corrigió en esta carpeta el 8/11: ver [Correcciones respecto de la versión anterior](#correcciones-respecto-de-la-versión-anterior).
 > - ft-crm: rama `main`, commit `aaeb85e`, más los ajustes del BFF que aún no tienen commit (ver [Ya ajustado en ft-crm](#ya-ajustado-en-ft-crm-pendiente-de-commit)).
 >
 > Esta referencia se generó a partir del código fuente del backend y se verificó ruta por ruta contra ese código: roles, validaciones, mensajes de error y forma de las respuestas. Lo que dice de ft-crm se verificó contra su código actual. El plan para pasar ft-crm a modo live está en [05-implementacion-ft-crm.md](05-implementacion-ft-crm.md).
@@ -459,6 +459,8 @@ Columnas:
 | GET | `/reservation-requests/:id` | ADMIN, OWNER, OPERATOR | 200 | `/api/backend` | `requestsApi.get` | [Ver detalle de solicitud de reserva](03-clientes-reservas.md#ver-detalle-de-solicitud-de-reserva) |
 | PATCH | `/reservation-requests/:id` | ADMIN, OPERATOR | 200 | `/api/backend` | `requestsApi.update` (nueva) | [Editar solicitud de reserva](03-clientes-reservas.md#editar-solicitud-de-reserva) |
 | PATCH | `/reservation-requests/:id/status` | ADMIN, OPERATOR | 200 | `/api/backend` | `requestsApi.cancel` | [Cancelar solicitud de reserva](03-clientes-reservas.md#cancelar-solicitud-de-reserva) |
+| POST | `/reservation-requests/:id/approve` | ADMIN, OWNER | 200 | `/api/backend` | `requestsApi.approve` (nueva) | [Aprobar solicitud de reserva](03-clientes-reservas.md#aprobar-solicitud-de-reserva) |
+| POST | `/reservation-requests/:id/reject` | ADMIN, OWNER | 200 | `/api/backend` | `requestsApi.reject` (nueva) | [Rechazar solicitud de reserva](03-clientes-reservas.md#rechazar-solicitud-de-reserva) |
 | POST | `/reservations` | ADMIN | 201 | `/api/backend` | `reservationsApi.create` (nueva) | [Crear reserva manual](03-clientes-reservas.md#crear-reserva-manual) |
 | GET | `/reservations` | ADMIN, OWNER, OPERATOR | 200 | `/api/backend` | `reservationsApi.list` | [Listar reservas (calendario)](03-clientes-reservas.md#listar-reservas-calendario) |
 | GET | `/reservations/:id` | ADMIN, OWNER, OPERATOR | 200 | `/api/backend` | `reservationsApi.get` | [Ver detalle de reserva](03-clientes-reservas.md#ver-detalle-de-reserva) |
@@ -683,6 +685,143 @@ Hoy funcionan, pero hacen varias llamadas por fila o calculan en el navegador. S
 - Estadísticas (hasta 20 páginas de 100 por fuente);
 - pestaña Esperando (una lectura por estado, de hasta 5 páginas cada una, porque `status` acepta un solo valor);
 - etiqueta «Samanta» de los mensajes salientes (cruzar con los borradores aprobados, porque el mensaje no dice que salió de un borrador).
+
+## Cambios del backend del 10/11/2026 (M9.3): aviso al cliente de la decisión del propietario
+
+Todavía sin commit. Requiere la migración `20261114000000_customer_decision_notice`. Va encima de M9.2. No hay rutas nuevas.
+
+1. **Aviso automático.** Cuando el propietario acepta, rechaza o propone un cambio desde su WhatsApp, el backend avisa al cliente:
+   - en la conversación de Samanta de la que salió la solicitud (WhatsApp, Messenger o Instagram);
+   - o, para las de la web, en la conversación de WhatsApp del cliente.
+
+   Las decisiones tomadas en el CRM no avisan solas.
+2. **Reglas.**
+   - Con la ventana de 24 h abierta se envía un texto normal.
+   - Con la ventana cerrada, solo por WhatsApp, y solo con plantilla aprobada, `CUSTOMER_DECISION_TEMPLATES_ENABLED=true` y un WhatsApp que el cliente nos dio.
+   - Nunca se escribe en una conversación que atiende una persona.
+   - El aviso de aceptación sale solo después de que la reserva `CONFIRMED` existe.
+   - El de rechazo nunca dice «confirmada».
+   - El de cambio propuesto no cambia nada y pasa la conversación a una persona.
+3. **Un aviso por solicitud**, por el outbox y con sus reintentos. No se duplica con webhooks repetidos ni con respuestas simultáneas.
+4. **Campos nuevos en el detalle** de la solicitud:
+   - `customerNoticeMessage`: el aviso y su estado;
+   - `customerNoticeError`: por qué no se pudo avisar. En ese caso también se agrega una nota `CRM:` en `comments`.
+
+   Muestra una alerta «Avisar al cliente» cuando `customerNoticeError` no sea nulo.
+5. **Samanta** ya no responde «pendiente de aprobación» a un «sí» tardío después de la decisión (`reservationOutcome: "ALREADY_DECIDED"`).
+
+Detalle en [03 › Aviso al cliente de la decisión](03-clientes-reservas.md#aviso-al-cliente-de-la-decisión).
+
+## Cambios del backend del 10/11/2026 (M9.2): respuestas del propietario por WhatsApp
+
+Todavía sin commit. Requiere la migración `20261113000000_owner_whatsapp_replies`. Va encima de M9.1. No hay rutas nuevas.
+
+1. **El propietario decide desde su WhatsApp.** Con los botones de la plantilla, o escribiendo ACEPTAR, RECHAZAR o PROPONER CAMBIO **con el código** de la solicitud:
+   - Aceptar: `ACCEPTED` y una reserva `CONFIRMED`, con la misma lógica que `POST /reservation-requests/:id/approve`.
+   - Rechazar: `REJECTED`, sin reserva.
+   - Proponer cambio: `MODIFICATION_REQUESTED`. Su texto siguiente queda en `comments` como `CRM: propuesta del propietario…`, sin cambiar la fecha, las personas ni el servicio.
+
+   El historial registra `actorType: "OWNER"` con el usuario `approvalResponsibleId`.
+2. **Seguridad.** Solo cuenta el teléfono que informa Meta igual a `ownerWhatsappNumber`, y solo sobre solicitudes que se le enviaron a él. Un botón vale por el mensaje que responde. Un texto necesita el código, y un «Aceptar» sin código no decide nada. Respuestas ambiguas, códigos desconocidos o solicitudes ya resueltas no cambian nada y reciben una aclaración.
+3. **Idempotencia.** Los webhooks repetidos y las respuestas simultáneas aplican una sola decisión, y hay como mucho una reserva por solicitud.
+4. **Samanta** nunca contesta al propietario: sus mensajes se procesan antes que ella y su conversación se mantiene en pausa.
+5. **Lo visible:**
+   - el estado `MODIFICATION_REQUESTED` ahora se alcanza;
+   - aparecen entradas `OWNER` en `statusHistory`;
+   - en la conversación del propietario aparecen los textos de confirmación del backend.
+
+   Desde M9.3 también se avisa al cliente (ver arriba).
+
+Detalle en [03 › Respuestas del propietario](03-clientes-reservas.md#respuestas-del-propietario).
+
+## Cambios del backend del 10/11/2026 (M9.1): envío de solicitudes al WhatsApp del propietario
+
+Todavía sin commit. Requiere la migración `20261112000000_owner_whatsapp_approval` y, para activarlo, una plantilla aprobada en Meta y `OWNER_APPROVAL_ENABLED=true`. Va encima de M8.3. No hay rutas nuevas.
+
+1. **Configuración.** `RestaurantConfig` trae `ownerWhatsappNumber` (E.164, distinto de `whatsappNumber`, o `null`). En `PUT /restaurant-config`, **omitirlo conserva el valor guardado** y `null` lo borra. Sin ese número o sin `approvalResponsibleId` (un OWNER), no se envía nada ([02](02-configuracion-catalogo.md)).
+2. **Envío automático.**
+   - Cada solicitud nueva de Samanta o de la web en `READY_TO_SEND` se envía **una vez** al WhatsApp del propietario, como plantilla con «Aceptar», «Rechazar» y «Proponer cambio», por el outbox con sus reintentos. Las creadas a mano no se envían.
+   - La solicitud pasa a `SENT_TO_OWNER` al encolarse y a `WAITING_RESPONSE` solo cuando WhatsApp acepta el mensaje (`SENT`, `DELIVERED` o `READ`).
+   - Si el mensaje falla o queda en duda, vuelve a `READY_TO_SEND` y no se reenvía. Cada paso queda en `statusHistory` con `actorType: "SYSTEM"`.
+3. **Respuesta del propietario:** desde M9.2 se procesa sola (ver arriba). Una persona también puede aprobar o rechazar con las rutas de M8.3, que aceptan `SENT_TO_OWNER` y `WAITING_RESPONSE`. Esas solicitudes no admiten `PATCH` ni cancelar (409).
+4. **Lecturas.**
+   - El detalle de la solicitud trae `ownerMessage` (`{ id, status, errorCode, createdAt, sentAt, deliveredAt, providerReadAt }` o `null`).
+   - En la Bandeja y en Clientes aparece el contacto «Propietario», con su conversación de WhatsApp y Samanta en pausa `MANUAL`. No le quites la pausa.
+
+Detalle en [03 › Envío al WhatsApp del propietario](03-clientes-reservas.md#envío-al-whatsapp-del-propietario).
+
+## Cambios del backend del 10/11/2026: aprobación manual de solicitudes
+
+Todavía sin commit. **No requiere migración.** Va encima de M8.1 y M8.2.
+
+1. **Rutas nuevas** (ADMIN y OWNER; OPERATOR y SUPPORT reciben 403):
+   - `POST /reservation-requests/:id/approve`, sin body. En una transacción crea **una** reserva `CONFIRMED` en el calendario con los datos de la solicitud (cliente, fecha, personas, elemento, y `specialRequirements` → `notes`), con `reservationRequestId`, y pasa la solicitud a `ACCEPTED`. Responde 200 con `{ request, reservation }`.
+   - `POST /reservation-requests/:id/reject`, con `{ "reason"?: string }` (1–1000). Pasa la solicitud a `REJECTED` sin crear reserva. Responde 200 con la solicitud.
+   - Las dos dejan una entrada en `statusHistory` (`actorType: "USER"`, el usuario del token y, al rechazar, el motivo).
+2. **Idempotencia y concurrencia.**
+   - Aprobar otra vez devuelve la misma reserva, y rechazar otra vez no cambia nada.
+   - Dos aprobaciones a la vez dejan una sola reserva: la base de datos admite una por solicitud.
+   - Una rechazada no se aprueba y una aprobada no se rechaza (409). Para anular una aprobada, cancela su reserva en el calendario.
+3. **Estados.**
+   - Se aprueba desde `READY_TO_SEND` (y, con M9, desde `SENT_TO_OWNER` o `WAITING_RESPONSE`).
+   - Se rechaza también desde `INCOMPLETE_DATA`.
+   - Una incompleta o con la fecha pasada no se aprueba (409). Si el elemento comercial ya no está activo y aprobado, 400.
+4. **Lecturas.**
+   - El detalle de la solicitud trae `reservation` (`{ id, code, status, reservationAt }` o `null`).
+   - `Reservation.reservationRequestId` ya no es siempre `null`: la etiqueta «Aceptada por el dueño» se puede mostrar.
+5. **Caché.** Tras aprobar, invalida `qk.requestsAll`, `qk.reservationsAll` y `qk.statsAll`. Tras rechazar, `qk.requestsAll` y `qk.statsAll`.
+6. **Sin cambios:** el aviso al cliente (hazlo por la Bandeja), el estado del cliente, la aprobación del dueño por WhatsApp (M9), la renegociación (M10), Samanta y el correo.
+
+Detalle en [03 › Aprobar](03-clientes-reservas.md#aprobar-solicitud-de-reserva) y [03 › Rechazar](03-clientes-reservas.md#rechazar-solicitud-de-reserva); `endpoints.ts` y tipos en [05](05-implementacion-ft-crm.md).
+
+## Cambios del backend del 10/11/2026 (M8.2): Samanta registra solicitudes
+
+Todavía sin commit, y requiere la migración `20261111000000_samanta_reservation_requests`. Va encima de M8.1 (sección siguiente). No hay rutas nuevas.
+
+1. **Samanta automática registra la solicitud** cuando el cliente confirma los datos, en lugar de pasar la conversación a una persona. Lo hace en dos pasos:
+   - Primero envía un **resumen fijo** con fecha, hora, personas y, si los hay, servicio y requerimientos, y pide un «sí».
+   - Si el cliente lo acepta de forma explícita, crea la solicitud: `READY_TO_SEND`, con el cliente de la conversación y `conversationId`, y `sourceChannel` = canal de la conversación. Luego le responde que quedó **registrada y pendiente de aprobación**.
+   - Nunca dice que la reserva está confirmada y no crea reservas en el calendario.
+   - Detalle, casos y textos en [04 › Solicitudes que registra Samanta](04-bandeja-samanta.md#solicitudes-que-registra-samanta).
+2. **Validación en el backend, no en la IA.** Los datos se validan en la zona del restaurante (`America/Lima`):
+   - la fecha debe ser real y futura;
+   - personas de 1 en adelante;
+   - el servicio debe ser un elemento activo y aprobado;
+   - el cliente no debe tener ya una solicitud abierta para ese mismo momento.
+
+   Un «sí» solo vale como respuesta a un resumen entregado, sin usar y de menos de 24 h. La solicitud se crea con los datos guardados de ese resumen. Un mensaje repetido o dos confirmaciones a la vez producen una sola solicitud.
+3. **Ya no pausa al confirmar.** Siguen pasando a una persona los reclamos, la petición de hablar con alguien, las alergias, las cancelaciones o cambios de una reserva existente, los eventos privados, los pagos y un «sí» sin resumen previo (`NO_PROPOSAL`).
+4. **Borradores.** `SamantaDraft` trae tres campos nuevos, `null` en los manuales y en los anteriores:
+   - `reservationProposal`: el resumen enviado;
+   - `reservationRequestId`: la solicitud creada a partir de ese resumen;
+   - `reservationOutcome`: qué hizo la acción, p. ej. `PROPOSED`, `CREATED` o `PAST_DATE`.
+
+   Cuando hay `reservationOutcome`, `content` es el texto fijo del backend y `originalContent` el de la IA. `promptVersion` pasa a `samanta-v4`, y el contexto de la IA trae `customer.awaitingConfirmation`.
+5. **Solicitudes y clientes.**
+   - Las solicitudes de Samanta llevan en `comments` la nota `CRM: registrada por Samanta…`.
+   - El cliente pasa a `REQUESTED_RESERVATION` si estaba en `NEW`, `INTERESTED` o `IN_CONVERSATION`, igual que con la web.
+   - Para mostrarlas en la Bandeja: `GET /reservation-requests?conversationId=…`.
+6. **Sin cambios:** los borradores manuales (nunca registran solicitudes), el modo sombra (no registra nada), WhatsApp, Messenger, Instagram y el correo.
+7. **Texto vacío de la IA (corrección del 10/11).** En un resumen o una confirmación, la IA a veces no escribe texto. Antes eso fallaba con `AI_INVALID_RESPONSE` y la conversación pasaba a una persona. Ahora se acepta: `originalContent` queda en `""` y `content` trae el texto fijo o uno de respaldo, nunca vacío. Sin esas acciones, un texto vacío sigue siendo `AI_INVALID_RESPONSE`.
+
+## Cambios del backend del 10/11/2026: conversación e historial de las solicitudes
+
+Todavía sin commit, y requiere la migración `20261110000000_reservation_request_history`. Es la primera parte del flujo de solicitudes (M8). Cambios compatibles: los campos nuevos son opcionales o llegan en `null`, y no hay rutas nuevas.
+
+1. **Conversación vinculada.**
+   - `ReservationRequest` trae el campo nuevo `conversationId` (`Uuid | null`): la conversación de la Bandeja a la que pertenece la solicitud, siempre del mismo cliente.
+   - Se fija con `conversationId` en `POST` y `PATCH /reservation-requests` (`null` desvincula) y se filtra con `GET /reservation-requests?conversationId=…`.
+   - Una conversación de otro cliente responde 400 `La conversación pertenece a otro cliente`; una que no existe, 404 `Conversación no encontrada`.
+   - Las solicitudes existentes y las importadas de la web llegan con `null`. Las que registra Samanta (M8.2) la traen.
+2. **Historial de estados.**
+   - `GET /reservation-requests/:id` devuelve `ReservationRequestDetail`: la solicitud más `statusHistory`, una entrada por cada cambio de estado (`previousStatus`, `newStatus`, `actorType`, `actorId`, `reason`, `createdAt`, `actor`).
+   - Las escrituras y el listado no lo traen. Después de editar o cancelar, **invalida** `qk.request(id)` en lugar de guardar la respuesta.
+   - Hoy dejan entrada la edición que pasa entre `INCOMPLETE_DATA` y `READY_TO_SEND` y la cancelación, ambas con `actorType: "USER"`. Crear una solicitud, una edición que no cambia el estado y una cancelación repetida no dejan entrada.
+   - `actorType` puede ser `USER`, `SAMANTA`, `OWNER` o `SYSTEM`; los tres últimos llegarán con el flujo del dueño.
+   - Las solicitudes anteriores empiezan con el historial vacío.
+3. **Motivo al cancelar.** `PATCH /reservation-requests/:id/status` acepta `reason` (opcional, 1–1000 caracteres), que queda en el historial.
+
+Detalle en [03 › Ver detalle de solicitud de reserva](03-clientes-reservas.md#ver-detalle-de-solicitud-de-reserva) y [03 › `ReservationRequestStatusEntry`](03-clientes-reservas.md#reservationrequeststatusentry). Tipos y `endpoints.ts` actualizados en [05](05-implementacion-ft-crm.md).
 
 ## Cambios del backend del 9/11/2026: reservas de la web y plantillas de WhatsApp
 

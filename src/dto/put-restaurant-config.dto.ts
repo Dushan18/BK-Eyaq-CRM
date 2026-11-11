@@ -94,6 +94,17 @@ export class PutRestaurantConfigDto {
   @MaxLength(16)
   whatsappNumber!: string;
 
+  // M9.1: the owner's personal WhatsApp for approvals. Omitted keeps the current one,
+  // null removes it (and stops sending requests to the owner).
+  @IsOptional()
+  @Transform(trimString)
+  @IsString()
+  @Matches(/^\+[1-9]\d{7,14}$/, {
+    message: 'ownerWhatsappNumber debe usar formato internacional E.164',
+  })
+  @MaxLength(16)
+  ownerWhatsappNumber?: string | null;
+
   @Transform(normalizeEmail)
   @IsEmail()
   @MaxLength(320)

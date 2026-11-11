@@ -39,6 +39,7 @@ export const reservationRequestSelect = {
   externalReference: true,
   customerId: true,
   commercialItemId: true,
+  conversationId: true,
   sourceChannel: true,
   reservationAt: true,
   numberOfPeople: true,
@@ -51,6 +52,57 @@ export const reservationRequestSelect = {
   updatedAt: true,
   customer,
   commercialItem,
+} satisfies Prisma.ReservationRequestSelect;
+
+// GET /reservation-requests/:id: the request plus its status changes, oldest first.
+export const reservationRequestDetailSelect = {
+  ...reservationRequestSelect,
+  statusHistory: {
+    select: {
+      id: true,
+      previousStatus: true,
+      newStatus: true,
+      actorType: true,
+      actorId: true,
+      reason: true,
+      createdAt: true,
+      actor: { select: publicUser },
+    },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  },
+  // The calendar reservation created when the request was approved, or null.
+  reservation: {
+    select: { id: true, code: true, status: true, reservationAt: true },
+  },
+  // M9.1: the WhatsApp template that asked the owner, with its delivery state, or null.
+  ownerMessage: {
+    select: {
+      id: true,
+      status: true,
+      errorCode: true,
+      createdAt: true,
+      sentAt: true,
+      deliveredAt: true,
+      providerReadAt: true,
+    },
+  },
+  // M9.3: the message that told the customer the owner's decision, with its delivery
+  // state, or null; customerNoticeError says why none could be sent.
+  customerNoticeMessage: {
+    select: {
+      id: true,
+      conversationId: true,
+      channel: true,
+      templateName: true,
+      status: true,
+      errorCode: true,
+      createdAt: true,
+      sentAt: true,
+      deliveredAt: true,
+      providerReadAt: true,
+    },
+  },
+  customerNoticeError: true,
 } satisfies Prisma.ReservationRequestSelect;
 
 export const reservationSelect = {

@@ -2,10 +2,34 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import {
   CreateReservationRequestDto,
+  RejectReservationRequestDto,
   ReservationRequestQueryDto,
   UpdateReservationRequestDto,
   UpdateReservationRequestStatusDto,
 } from './reservation-request.dto';
+
+describe('Rechazo de solicitud (DTO)', () => {
+  const options = { whitelist: true, forbidNonWhitelisted: true };
+  const check = (body: object) =>
+    validate(plainToInstance(RejectReservationRequestDto, body), options);
+  it('motivo opcional, recortado, de hasta 1000 caracteres', async () => {
+    const dto = plainToInstance(RejectReservationRequestDto, {
+      reason: '  Sin mesas  ',
+    });
+    expect(await validate(dto, options)).toEqual([]);
+    expect(dto.reason).toBe('Sin mesas');
+    expect(await check({})).toEqual([]);
+    expect(await check({ reason: null })).toEqual([]);
+  });
+  it.each([
+    { reason: '   ' },
+    { reason: 'x'.repeat(1001) },
+    { reason: 5 },
+    { status: 'REJECTED' },
+  ])('rechaza %j', async (body) => {
+    expect(await check(body)).not.toEqual([]);
+  });
+});
 import {
   CreateReservationDto,
   UpdateReservationDto,
@@ -15,6 +39,72 @@ import {
 const customerId = '052cfe2a-ff46-47c1-aa84-283113d92e68';
 const options = { whitelist: true, forbidNonWhitelisted: true };
 const valid = { customerId, sourceChannel: 'PHONE' };
+
+describe('Reservation request: conversación e historial', () => {
+  const conversationId = '48c02bdd-66c1-4147-882d-c6cd54f035ec';
+  it.each([conversationId, null])(
+    'acepta conversationId %p al crear y editar',
+    async (value) => {
+      for (const [cls, body] of [
+        [CreateReservationRequestDto, { ...valid, conversationId: value }],
+        [UpdateReservationRequestDto, { conversationId: value }],
+      ] as const)
+        expect(await validate(plainToInstance(cls, body), options)).toEqual([]);
+    },
+  );
+  it('rechaza un conversationId que no es UUID', async () => {
+    const errors = await validate(
+      plainToInstance(CreateReservationRequestDto, {
+        ...valid,
+        conversationId: 'bad',
+      }),
+      options,
+    );
+    expect(errors.map((error) => error.property)).toEqual(['conversationId']);
+  });
+  it('la cancelación acepta un motivo opcional, recortado y de hasta 1000 caracteres', async () => {
+    const dto = plainToInstance(UpdateReservationRequestStatusDto, {
+      status: 'CANCELLED',
+      reason: '  Cliente desistió  ',
+    });
+    expect(await validate(dto, options)).toEqual([]);
+    expect(dto.reason).toBe('Cliente desistió');
+    for (const reason of [undefined, null])
+      expect(
+        await validate(
+          plainToInstance(UpdateReservationRequestStatusDto, {
+            status: 'CANCELLED',
+            reason,
+          }),
+          options,
+        ),
+      ).toEqual([]);
+    for (const reason of ['   ', 'x'.repeat(1001), 5])
+      expect(
+        await validate(
+          plainToInstance(UpdateReservationRequestStatusDto, {
+            status: 'CANCELLED',
+            reason,
+          }),
+          options,
+        ),
+      ).not.toEqual([]);
+  });
+  it('filtra por conversationId', async () => {
+    expect(
+      await validate(
+        plainToInstance(ReservationRequestQueryDto, { conversationId }),
+        options,
+      ),
+    ).toEqual([]);
+    expect(
+      await validate(
+        plainToInstance(ReservationRequestQueryDto, { conversationId: 'x' }),
+        options,
+      ),
+    ).not.toEqual([]);
+  });
+});
 
 describe('Reservation DTOs', () => {
   it('permite solicitudes incompletas y limpia texto', async () => {

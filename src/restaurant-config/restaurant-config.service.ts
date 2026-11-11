@@ -25,6 +25,7 @@ const restaurantConfigSelect = {
   latitude: true,
   longitude: true,
   whatsappNumber: true,
+  ownerWhatsappNumber: true,
   email: true,
   website: true,
   currency: true,
@@ -147,6 +148,11 @@ export class RestaurantConfigService {
       latitude: dto.latitude ?? null,
       longitude: dto.longitude ?? null,
       whatsappNumber: dto.whatsappNumber.trim(),
+      // Unlike the other optional fields, omitting it keeps the current value: a client
+      // that does not know the field yet must not erase the owner's number.
+      ...(dto.ownerWhatsappNumber === undefined
+        ? {}
+        : { ownerWhatsappNumber: dto.ownerWhatsappNumber?.trim() || null }),
       email: dto.email.trim().toLowerCase(),
       website: this.normalizeOptionalString(dto.website),
       currency: dto.currency,
@@ -305,6 +311,16 @@ export class RestaurantConfigService {
     if (dto.schedules.some((schedule) => !isScheduleTimeCoherent(schedule))) {
       throw new BadRequestException(
         'Los horarios son incoherentes o cruzan la medianoche',
+      );
+    }
+
+    // The restaurant's own number cannot message itself.
+    if (
+      dto.ownerWhatsappNumber &&
+      dto.ownerWhatsappNumber.trim() === dto.whatsappNumber.trim()
+    ) {
+      throw new BadRequestException(
+        'ownerWhatsappNumber debe ser distinto de whatsappNumber',
       );
     }
   }

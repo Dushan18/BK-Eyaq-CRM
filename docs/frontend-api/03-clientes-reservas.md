@@ -869,6 +869,7 @@ Sin cuerpo. `apiFetch` devuelve `undefined`.
 | `customerId` | `Uuid` | Sí | Cliente existente. No admite `null`. |
 | `sourceChannel` | `ContactChannel` | Sí | Canal por el que llegó la solicitud. No se hereda del cliente. No admite `null`. |
 | `commercialItemId` | `Uuid` \| null | No | Elemento existente, activo (`isActive`) y `APPROVED`. |
+| `conversationId` | `Uuid` \| null | No | Desde el 10/11. Conversación existente **del mismo cliente** (`customerId`). Vincula la solicitud a esa conversación de la Bandeja. Puede ser de otro canal que `sourceChannel`. |
 | `reservationAt` | `IsoDateTime` \| null | No | ISO 8601 con segundos y zona: `YYYY-MM-DDTHH:mm:ss[.sss]` más `Z` o `±HH:mm` (regex `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z\|[+-]\d{2}:\d{2})$`). Fecha real y estrictamente posterior a la hora del servidor. |
 | `numberOfPeople` | number \| null | No | Entero JSON (no texto) de 1 a 2147483647. El máximo es técnico, no un aforo. |
 | `quotedPrice` | `MoneyString` \| null | No | Texto decimal que cumple `^(?:0\|[1-9]\d{0,7})(?:\.\d{1,2})?$`: de `"0"` a `"99999999.99"`, hasta 2 decimales, sin signo, sin ceros a la izquierda y sin exponente. `"150.5"` es válido y vuelve como `"150.50"`. |
@@ -922,6 +923,7 @@ No envía `currency`: el backend toma la del restaurante (`PEN`).
   "code": "RES-2026-000042",
   "customerId": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42",
   "commercialItemId": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57",
+  "conversationId": null,
   "sourceChannel": "PHONE",
   "reservationAt": "2026-11-08T01:00:00.000Z",
   "numberOfPeople": 4,
@@ -960,12 +962,14 @@ No envía `currency`: el backend toma la del restaurante (`PEN`).
 | 400 | `customerId must be a UUID` | Falta, es `null` o no es un UUID. |
 | 400 | `sourceChannel must be one of the following values: WHATSAPP, FACEBOOK, INSTAGRAM, WEBSITE, PHONE, EMAIL, OTHER` | Falta, es `null` o no está en el enum. |
 | 400 | `commercialItemId must be a UUID` | No es un UUID. |
+| 400 | `conversationId must be a UUID` | No es un UUID. |
 | 400 | `reservationAt must be a string` · `reservationAt must be a valid ISO 8601 date string` · `reservationAt must match /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z\|[+-]\d{2}:\d{2})$/ regular expression` | No es texto (p. ej. un timestamp numérico), no es una fecha real o le faltan los segundos o la zona. |
 | 400 | `numberOfPeople must be an integer number` · `numberOfPeople must not be less than 1` · `numberOfPeople must not be greater than 2147483647` | No es un entero JSON (`"4"` da los tres mensajes), es menor que 1 o pasa del máximo. |
 | 400 | `quotedPrice must be a string` · `quotedPrice must match /^(?:0\|[1-9]\d{0,7})(?:\.\d{1,2})?$/ regular expression` | Llega como número (`150`) o con otro formato (`"-1.00"`, `"1.234"`, `"0150.00"`, `"1e2"`). |
 | 400 | `currency must be one of the following values: PEN, USD` | Otra moneda (p. ej. `EUR`). |
 | 400 | `comments must be a string` · `comments should not be empty` · `comments must be shorter than or equal to 5000 characters` | Igual para `specialRequirements`. |
 | 400 | `El elemento comercial debe estar activo y aprobado` | El elemento está inactivo o no está `APPROVED`. |
+| 400 | `La conversación pertenece a otro cliente` | `conversationId` es de una conversación de otro cliente. |
 | 400 | `La fecha de reserva debe ser válida y futura` | `reservationAt` no es posterior a la hora del servidor. |
 | 400 | `El precio y la moneda deben estar presentes juntos` | Llega `currency` sin `quotedPrice`, o `quotedPrice` con `currency: null`. |
 | 400 | `Datos o relaciones de reserva inválidos` | Defensivo: la base de datos rechazó una clave foránea. |
@@ -973,25 +977,27 @@ No envía `currency`: el backend toma la del restaurante (`PEN`).
 | 403 | `No tienes permisos para realizar esta acción` | El usuario no tiene ADMIN ni OPERATOR (p. ej. solo OWNER o SUPPORT). |
 | 404 | `Cliente no encontrado` | `customerId` no existe. |
 | 404 | `Elemento comercial no encontrado` | `commercialItemId` no existe. |
+| 404 | `Conversación no encontrada` | `conversationId` no existe. |
 | 409 | `Configura el restaurante antes de crear solicitudes o reservas` | Aún no existe la configuración del restaurante (`PUT /restaurant-config`). Se comprueba primero. |
 | 409 | `Conflicto concurrente; vuelve a intentarlo` | La transacción siguió en conflicto tras 3 intentos. |
 | 409 | `El código o la solicitud ya están vinculados a una reserva` | Defensivo: colisión de un valor único en la base de datos. |
 | 413 | `El cuerpo de la petición supera el tamaño máximo permitido` | El body pasa de 100 kb. |
 | 503 | `La zona horaria del restaurante no es válida` | Caso límite: el `timeZone` guardado no es una zona IANA válida. `PUT /restaurant-config` ya la valida. |
 
-Orden: configuración (409) → cliente (404) → elemento (404 o 400) → fecha futura (400) → precio y moneda (400) → código (503).
+Orden: configuración (409) → cliente (404) → elemento (404 o 400) → conversación (404 o 400) → fecha futura (400) → precio y moneda (400) → código (503).
 
 **Efectos**
 
 - Crea la solicitud con su `code` `RES-<año>-<secuencia>`:
   - La secuencia es global, tiene al menos 6 dígitos y no se reinicia cada año. Puede tener saltos: un intento fallido también consume un número.
   - El año es el de la creación en la zona horaria del restaurante.
+- No escribe en el historial de estados: el historial solo guarda **cambios** de estado ([`ReservationRequestStatusEntry`](#reservationrequeststatusentry)).
 - No modifica al cliente: ni su estado ni sus fechas de contacto.
 - No aparece en el calendario (`GET /reservations` solo lee reservas) y no avisa a nadie: el envío al dueño no existe todavía.
 
 **Notas para el frontend**
 
-- Además de esta ruta, desde el 9/11 el backend crea solicitudes con las reservas que llegan de la web por correo ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). Samanta no las crea. ft-crm aún no tiene el formulario «Nueva solicitud».
+- Además de esta ruta, desde el 9/11 el backend crea solicitudes con las reservas que llegan de la web por correo ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)) y, desde el 10/11, Samanta automática las crea cuando el cliente confirma un resumen en la conversación ([04 › Solicitudes que registra Samanta](04-bandeja-samanta.md#solicitudes-que-registra-samanta)), ya vinculadas a ella (`conversationId`). ft-crm aún no tiene el formulario «Nueva solicitud».
 - Arma `reservationAt` con la fecha y la hora que elige la persona en la zona del restaurante y conviértelo a un instante. `toISOString()` sirve.
 - Envía `quotedPrice` como texto. Para el selector de moneda, propone por defecto el `currency` de `GET /restaurant-config`.
 - En el selector de elementos, ofrece solo los activos y aprobados: `catalogApi.items({ isActive: true, approvalStatus: "APPROVED" })`.
@@ -1020,6 +1026,7 @@ Orden: configuración (409) → cliente (404) → elemento (404 o 400) → fecha
 | `status` | `ReservationRequestStatus` | No | — | Un solo valor de los 9 del enum. |
 | `channel` | `ContactChannel` | No | — | Filtra por el `sourceChannel` de la solicitud. |
 | `commercialItemId` | `Uuid` | No | — | Solicitudes de ese elemento comercial. |
+| `conversationId` | `Uuid` | No | — | Desde el 10/11. Solicitudes vinculadas a esa conversación (p. ej. para mostrarlas en la Bandeja). |
 | `search` | string | No | — | Trim; de 1 a 200 caracteres. Coincidencia parcial y sin distinguir mayúsculas en `code` y en el nombre y apellido del cliente. En el `phone` del cliente, coincidencia con el texto tal como se guardó; y, si el texto tiene dígitos, en su teléfono normalizado. No busca por email. |
 
 **Ejemplo de petición**
@@ -1049,6 +1056,7 @@ La respuesta de ejemplo corresponde a `requestsApi.list({ page: 1, limit: 2 })`,
       "code": "RES-2026-000043",
       "customerId": "b8e1d4c7-2a9f-4e63-9d15-7f0a3c6b2e81",
       "commercialItemId": null,
+      "conversationId": null,
       "sourceChannel": "FACEBOOK",
       "reservationAt": null,
       "numberOfPeople": null,
@@ -1073,6 +1081,7 @@ La respuesta de ejemplo corresponde a `requestsApi.list({ page: 1, limit: 2 })`,
       "code": "RES-2026-000042",
       "customerId": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42",
       "commercialItemId": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57",
+      "conversationId": null,
       "sourceChannel": "PHONE",
       "reservationAt": "2026-11-08T01:00:00.000Z",
       "numberOfPeople": 4,
@@ -1113,7 +1122,7 @@ La primera es de un cliente de Messenger, todavía sin fecha ni número de perso
 | 400 | `property <parámetro> should not exist` | Llega un parámetro no declarado (p. ej. `orderBy`). |
 | 400 | `page must be an integer number` · `page must not be less than 1` · `page must not be greater than 1000000` | `page` no es un entero entre 1 y 1 000 000. |
 | 400 | `limit must be an integer number` · `limit must not be less than 1` · `limit must not be greater than 100` | `limit` no es un entero entre 1 y 100. |
-| 400 | `customerId must be a UUID` · `commercialItemId must be a UUID` | No son UUID. |
+| 400 | `customerId must be a UUID` · `commercialItemId must be a UUID` · `conversationId must be a UUID` | No son UUID. |
 | 400 | `dateFrom must be a string` · `dateFrom must be a valid ISO 8601 date string` · `dateFrom must match /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z\|[+-]\d{2}:\d{2})$/ regular expression` | Parámetro repetido, fecha imposible o sin segundos ni zona. Un `+` sin codificar llega como espacio y da los dos últimos. Los mismos mensajes existen para `dateTo`. |
 | 400 | `status must be one of the following values: INCOMPLETE_DATA, READY_TO_SEND, SENT_TO_OWNER, WAITING_RESPONSE, ACCEPTED, REJECTED, MODIFICATION_REQUESTED, RENEGOTIATING, CANCELLED` | Valor fuera del enum. |
 | 400 | `channel must be one of the following values: WHATSAPP, FACEBOOK, INSTAGRAM, WEBSITE, PHONE, EMAIL, OTHER` | Valor fuera del enum. |
@@ -1143,8 +1152,8 @@ Ninguno (solo lectura).
 | | |
 |---|---|
 | Roles | ADMIN, OWNER, OPERATOR |
-| Respuesta | 200 · `ReservationRequest` |
-| ft-crm | `requestsApi.get(id: string): Promise<ReservationRequest>` · existe (sin pantalla que la use) |
+| Respuesta | 200 · `ReservationRequestDetail` (desde el 10/11; antes `ReservationRequest`) |
+| ft-crm | `requestsApi.get(id: string): Promise<ReservationRequestDetail>` · existe (sin pantalla que la use); cambia el tipo de retorno |
 | Caché | `qk.request(id)` → `["reservation-requests", "detail", id]` · **nueva**. Queda dentro de `qk.requestsAll`. |
 
 **Parámetros de ruta**
@@ -1161,6 +1170,7 @@ Ninguno (solo lectura).
   "code": "RES-2026-000042",
   "customerId": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42",
   "commercialItemId": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57",
+  "conversationId": null,
   "sourceChannel": "PHONE",
   "reservationAt": "2026-11-08T01:00:00.000Z",
   "numberOfPeople": 4,
@@ -1185,8 +1195,40 @@ Ninguno (solo lectura).
     "type": "DISH",
     "isActive": true,
     "approvalStatus": "APPROVED"
-  }
+  },
+  "statusHistory": [],
+  "reservation": null,
+  "ownerMessage": null,
+  "customerNoticeMessage": null,
+  "customerNoticeError": null
 }
+```
+
+Esta solicitud se creó ya completa y no ha cambiado de estado: `statusHistory` está vacío. El de una solicitud que se completó y después se canceló:
+
+```json
+"statusHistory": [
+  {
+    "id": "9d0f5a3e-6b1c-4e2a-8f7d-3c4b5a6e7f81",
+    "previousStatus": "INCOMPLETE_DATA",
+    "newStatus": "READY_TO_SEND",
+    "actorType": "USER",
+    "actorId": "e2b7c9d1-5f3a-4c8e-9b6d-1a2f3e4d5c6b",
+    "reason": null,
+    "createdAt": "2026-11-03T03:11:40.502Z",
+    "actor": { "id": "e2b7c9d1-5f3a-4c8e-9b6d-1a2f3e4d5c6b", "firstName": "Lucía", "lastName": "Torres" }
+  },
+  {
+    "id": "1a7e3c9b-2d4f-4b6a-8c0e-5f9d7b3a1c24",
+    "previousStatus": "READY_TO_SEND",
+    "newStatus": "CANCELLED",
+    "actorType": "USER",
+    "actorId": "e2b7c9d1-5f3a-4c8e-9b6d-1a2f3e4d5c6b",
+    "reason": "El cliente reservó por teléfono",
+    "createdAt": "2026-11-03T03:12:09.880Z",
+    "actor": { "id": "e2b7c9d1-5f3a-4c8e-9b6d-1a2f3e4d5c6b", "firstName": "Lucía", "lastName": "Torres" }
+  }
+]
 ```
 
 **Errores**
@@ -1204,9 +1246,13 @@ Ninguno (solo lectura).
 
 **Notas para el frontend**
 
-- Devuelve el mismo recurso que el listado: `customer` es un resumen (`id`, `firstName`, `lastName`, `phone`, `email`) y `commercialItem` es `null` si no hay elemento.
+- Devuelve el recurso del listado más `statusHistory` ([`ReservationRequestDetail`](#reservationrequestdetail)): `customer` es un resumen (`id`, `firstName`, `lastName`, `phone`, `email`) y `commercialItem` es `null` si no hay elemento. El listado y las escrituras **no** traen `statusHistory`.
+- `statusHistory` va por `createdAt` ascendente (luego `id`), sin paginar. Solo tiene cambios reales de estado: la creación y las ediciones que no cambian el estado no dejan entrada. Las solicitudes anteriores al 10/11 (también las importadas de la web) empiezan con el historial vacío.
+- Muestra quién hizo cada cambio con `actor` (`null` si `actorType` es `SYSTEM`). Hoy se generan entradas `USER`, `SYSTEM` (envío al propietario) y `OWNER` (sus respuestas por WhatsApp); `SAMANTA` todavía no.
+- Tras editar o cancelar, invalida `qk.request(id)`: la respuesta de la escritura no trae el historial.
 - Úsalo para abrir una solicitud por id (p. ej. desde un enlace) sin depender de la página del listado en la que esté.
 - Muestra las acciones de editar y cancelar solo si `status` es `INCOMPLETE_DATA` o `READY_TO_SEND` y el rol es ADMIN u OPERATOR. Editar en otro estado responde 409. Cancelar una solicitud ya cancelada responde 200 sin cambios; en los demás estados, 409.
+- Desde el 10/11, a ADMIN y OWNER muéstrales también [Aprobar](#aprobar-solicitud-de-reserva) (en `READY_TO_SEND`) y [Rechazar](#rechazar-solicitud-de-reserva) (en `INCOMPLETE_DATA` o `READY_TO_SEND`). El detalle trae `reservation`: la reserva creada al aprobar (`{ id, code, status, reservationAt }`), o `null`. Úsala para enlazar al calendario.
 
 ## Editar solicitud de reserva
 `PATCH /reservation-requests/:id`
@@ -1216,7 +1262,7 @@ Ninguno (solo lectura).
 | Roles | ADMIN, OPERATOR |
 | Respuesta | 200 · `ReservationRequest` |
 | ft-crm | `requestsApi.update(id: string, body: UpdateReservationRequestBody): Promise<ReservationRequest>` · **nueva** |
-| Caché | Guarda la respuesta en `qk.request(id)` (nueva) e invalida `qk.requestsAll` y `qk.statsAll` (nueva). |
+| Caché | Invalida `qk.requestsAll` (incluye `qk.request(id)`, que se vuelve a pedir con su `statusHistory`) y `qk.statsAll` (nueva). No guardes la respuesta en `qk.request(id)`: no trae `statusHistory`. |
 
 **Parámetros de ruta**
 
@@ -1231,6 +1277,7 @@ Ninguno (solo lectura).
 | `customerId` | `Uuid` | No | Cliente existente; no admite `null`. Cambiarlo pasa la solicitud a otro cliente. |
 | `sourceChannel` | `ContactChannel` | No | Valor del enum; no admite `null`. |
 | `commercialItemId` | `Uuid` \| null | No | Si cambia, el nuevo elemento debe existir, estar activo y `APPROVED`. Reenviar el actual es válido aunque ya esté inactivo. `null` lo quita. |
+| `conversationId` | `Uuid` \| null | No | Desde el 10/11. Conversación existente del cliente de la solicitud. `null` desvincula. Si cambias `customerId` y la solicitud tiene una conversación de otro cliente, envía también `conversationId` (otra o `null`). |
 | `reservationAt` | `IsoDateTime` \| null | No | Mismo formato con segundos y zona. Si llega, tiene que ser futura, aunque sea la misma fecha que ya tenía. `null` la borra. |
 | `numberOfPeople` | number \| null | No | Entero JSON de 1 a 2147483647. `null` lo borra. |
 | `quotedPrice` | `MoneyString` \| null | No | Mismo formato que al crear. `null` borra el precio y, si no envías `currency`, también la moneda. |
@@ -1281,6 +1328,7 @@ Viaja como `PATCH /api/backend/reservation-requests/c7a3e9f1-4b2d-4e8a-9f60-2d5b
   "code": "RES-2026-000042",
   "customerId": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42",
   "commercialItemId": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57",
+  "conversationId": null,
   "sourceChannel": "PHONE",
   "reservationAt": "2026-11-08T01:00:00.000Z",
   "numberOfPeople": 5,
@@ -1324,7 +1372,9 @@ Viaja como `PATCH /api/backend/reservation-requests/c7a3e9f1-4b2d-4e8a-9f60-2d5b
 | 400 | `currency must be one of the following values: PEN, USD` | Otra moneda. |
 | 400 | `comments must be a string` · `comments should not be empty` · `comments must be shorter than or equal to 5000 characters` | Igual para `specialRequirements`. |
 | 400 | `Proporciona al menos un campo para actualizar` | El body está vacío (`{}`). Se comprueba antes de buscar la solicitud. |
+| 400 | `conversationId must be a UUID` | No es un UUID. |
 | 400 | `El elemento comercial debe estar activo y aprobado` | El nuevo `commercialItemId` está inactivo o no está `APPROVED`. |
+| 400 | `La conversación pertenece a otro cliente` | La conversación que quedaría vinculada (la enviada o la actual, si cambias `customerId`) es de otro cliente. |
 | 400 | `La fecha de reserva debe ser válida y futura` | El `reservationAt` enviado no es futuro (también si es la misma fecha, ya pasada). |
 | 400 | `El precio y la moneda deben estar presentes juntos` | El precio y la moneda no quedan coherentes (ver la tabla de arriba). |
 | 400 | `Datos o relaciones de reserva inválidos` | Defensivo: la base de datos rechazó una clave foránea. |
@@ -1333,6 +1383,7 @@ Viaja como `PATCH /api/backend/reservation-requests/c7a3e9f1-4b2d-4e8a-9f60-2d5b
 | 404 | `Solicitud de reserva no encontrada` | La solicitud no existe. |
 | 404 | `Cliente no encontrado` | El nuevo `customerId` no existe. |
 | 404 | `Elemento comercial no encontrado` | El nuevo `commercialItemId` no existe. |
+| 404 | `Conversación no encontrada` | El `conversationId` enviado no existe. |
 | 404 | `Solicitud o reserva no encontrada` | Defensivo. |
 | 409 | `La solicitud no admite modificaciones en su estado actual` | La solicitud no está en `INCOMPLETE_DATA` ni en `READY_TO_SEND` (p. ej. está `CANCELLED`). |
 | 409 | `Configura el restaurante antes de crear solicitudes o reservas` | Se fija un precio en una solicitud sin moneda, sin enviar `currency`, y el restaurante no está configurado. |
@@ -1340,11 +1391,12 @@ Viaja como `PATCH /api/backend/reservation-requests/c7a3e9f1-4b2d-4e8a-9f60-2d5b
 | 409 | `El código o la solicitud ya están vinculados a una reserva` | Defensivo. |
 | 413 | `El cuerpo de la petición supera el tamaño máximo permitido` | El body pasa de 100 kb. |
 
-Orden: `:id` y validación del body → body vacío → solicitud (404) → estado (409) → cliente nuevo (404) → elemento nuevo (404 o 400) → fecha futura (400) → precio y moneda (409 o 400).
+Orden: `:id` y validación del body → body vacío → solicitud (404) → estado (409) → cliente nuevo (404) → elemento nuevo (404 o 400) → conversación (404 o 400) → fecha futura (400) → precio y moneda (409 o 400).
 
 **Efectos**
 
 - Actualiza los campos enviados, recalcula `status` (`INCOMPLETE_DATA` ⇄ `READY_TO_SEND`) y cambia `updatedAt`.
+- Si `status` cambia, agrega una entrada a `statusHistory` en la misma transacción (`actorType: "USER"`, el usuario del token, `reason: null`). Si no cambia, no agrega nada.
 - No modifica al cliente ni crea reservas.
 
 **Notas para el frontend**
@@ -1362,8 +1414,8 @@ Orden: `:id` y validación del body → body vacío → solicitud (404) → esta
 |---|---|
 | Roles | ADMIN, OPERATOR |
 | Respuesta | 200 · `ReservationRequest` |
-| ft-crm | `requestsApi.cancel(id: string): Promise<ReservationRequest>` · existe (sin pantalla que la use) |
-| Caché | Guarda la respuesta en `qk.request(id)` (nueva) e invalida `qk.requestsAll` y `qk.statsAll` (nueva). |
+| ft-crm | `requestsApi.cancel(id: string, reason?: string): Promise<ReservationRequest>` · existe (sin pantalla que la use); `reason` es nuevo y opcional |
+| Caché | Invalida `qk.requestsAll` (incluye `qk.request(id)`, que se vuelve a pedir con su `statusHistory`) y `qk.statsAll` (nueva). No guardes la respuesta en `qk.request(id)`: no trae `statusHistory`. |
 
 **Parámetros de ruta**
 
@@ -1376,6 +1428,7 @@ Orden: `:id` y validación del body → body vacío → solicitud (404) → esta
 | Campo | Tipo | Obligatorio | Reglas |
 |---|---|---|---|
 | `status` | `"CANCELLED"` | Sí | Único valor aceptado. Cualquier otro estado, `null` o un campo extra responden 400. |
+| `reason` | string \| null | No | Desde el 10/11. Motivo de la cancelación; trim, de 1 a 1000 caracteres. Se guarda en `statusHistory`. |
 
 **Ejemplo de petición**
 
@@ -1397,6 +1450,7 @@ Viaja como `PATCH /api/backend/reservation-requests/4e1b8d6f-0a3c-4f92-87d5-b6c2
   "code": "RES-2026-000043",
   "customerId": "b8e1d4c7-2a9f-4e63-9d15-7f0a3c6b2e81",
   "commercialItemId": null,
+  "conversationId": null,
   "sourceChannel": "FACEBOOK",
   "reservationAt": null,
   "numberOfPeople": null,
@@ -1423,21 +1477,23 @@ Viaja como `PATCH /api/backend/reservation-requests/4e1b8d6f-0a3c-4f92-87d5-b6c2
 | Código | Mensaje | Cuándo |
 |---|---|---|
 | 400 | `Validation failed (uuid is expected)` | `:id` no es un UUID. |
-| 400 | `property <campo> should not exist` | Llega otro campo además de `status`. |
+| 400 | `property <campo> should not exist` | Llega otro campo además de `status` y `reason`. |
 | 400 | `status must be one of the following values: CANCELLED` | Falta, es `null` o llega otro valor (`READY_TO_SEND`, `ACCEPTED`, `REJECTED`…). |
+| 400 | `reason must be a string` · `reason should not be empty` · `reason must be shorter than or equal to 1000 characters` | `reason` no es texto, está vacío o solo tiene espacios, o pasa de 1000 caracteres. |
 | 400 | `Solo se permite cancelar solicitudes en esta fase` | Defensivo: la validación del body lo intercepta antes. |
 | 401 | `Tu sesión terminó. Vuelve a iniciar sesión.` · `Inicia sesión para continuar.` | Los responde el BFF. Ver [Convenciones del módulo](#errores-que-ves-desde-el-navegador). |
 | 403 | `No tienes permisos para realizar esta acción` | El usuario no tiene ADMIN ni OPERATOR (p. ej. solo OWNER o SUPPORT). |
 | 404 | `Solicitud de reserva no encontrada` | La solicitud no existe. |
 | 404 | `Solicitud o reserva no encontrada` | Defensivo. |
-| 409 | `La solicitud no admite modificaciones en su estado actual` | La solicitud está en un estado distinto de `INCOMPLETE_DATA`, `READY_TO_SEND` o `CANCELLED`. Hoy ninguna ruta lleva a esos estados. |
+| 409 | `La solicitud no admite modificaciones en su estado actual` | La solicitud está en un estado distinto de `INCOMPLETE_DATA`, `READY_TO_SEND` o `CANCELLED` (p. ej. `ACCEPTED` o `REJECTED`, desde el 10/11). Una aprobada se anula cancelando su reserva en el calendario. |
 | 409 | `Conflicto concurrente; vuelve a intentarlo` | La transacción siguió en conflicto tras 3 intentos. |
 | 413 | `El cuerpo de la petición supera el tamaño máximo permitido` | El body pasa de 100 kb. |
 
 **Efectos**
 
 - Pasa la solicitud a `CANCELLED` y cambia `updatedAt`. Es un estado final: la solicitud no se puede editar ni reactivar.
-- Si ya estaba cancelada, responde 200 con el mismo recurso y el mismo `updatedAt` (idempotente).
+- En la misma transacción agrega a `statusHistory` el cambio (`<estado anterior>` → `CANCELLED`), con `actorType: "USER"`, el usuario del token y el `reason` enviado.
+- Si ya estaba cancelada, responde 200 con el mismo recurso y el mismo `updatedAt` (idempotente) y no agrega otra entrada al historial, aunque el `reason` sea distinto. Dos cancelaciones simultáneas dejan una sola entrada.
 - No borra la solicitud ni toca al cliente.
 
 **Notas para el frontend**
@@ -1445,7 +1501,183 @@ Viaja como `PATCH /api/backend/reservation-requests/4e1b8d6f-0a3c-4f92-87d5-b6c2
 - Pide confirmación antes de cancelar: no hay vuelta atrás.
 - Muestra la acción solo a ADMIN y OPERATOR (`can(roles, "request.cancel")`) y solo en `INCOMPLETE_DATA` o `READY_TO_SEND`.
 - Si una edición y una cancelación llegan a la vez, la cancelación no se pierde: la edición se aplica antes o responde 409. Refresca la solicitud tras cualquier 409.
-- Ciclo de vida actual: `INCOMPLETE_DATA` ⇄ `READY_TO_SEND` (lo calcula el backend) → `CANCELLED` (manual y final). Ver [Estados y transiciones](#estados-y-transiciones).
+- Ciclo de vida actual: `INCOMPLETE_DATA` ⇄ `READY_TO_SEND` (lo calcula el backend) → `CANCELLED` (manual y final), o → `ACCEPTED`/`REJECTED` con [Aprobar](#aprobar-solicitud-de-reserva) o [Rechazar](#rechazar-solicitud-de-reserva). Ver [Estados y transiciones](#estados-y-transiciones).
+
+## Aprobar solicitud de reserva
+`POST /reservation-requests/:id/approve`
+
+Desde el 10/11. Aprobación manual del dueño o de un administrador. Convierte la solicitud en una reserva confirmada del calendario. La aprobación por WhatsApp del dueño (M9) todavía no existe.
+
+| | |
+|---|---|
+| Roles | ADMIN, OWNER |
+| Respuesta | 200 · `ReservationRequestApproval` (`{ request, reservation }`), también al repetirla |
+| ft-crm | `requestsApi.approve(id: string): Promise<ReservationRequestApproval>` · **nueva** |
+| Caché | Invalida `qk.requestsAll` (incluye `qk.request(id)`), `qk.reservationsAll` y `qk.statsAll`. |
+| Cabeceras y límites | Idempotente: repetirla (p. ej. tras un 504) devuelve la misma reserva y no crea otra. |
+
+**Parámetros de ruta**
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `id` | `Uuid` | Id de la solicitud. Si no es un UUID, responde 400. |
+
+**Body:** ninguno.
+
+**Ejemplo de petición**
+
+```ts
+const { request, reservation } = await requestsApi.approve("c7a3e9f1-4b2d-4e8a-9f60-2d5b8c1e7a93");
+```
+
+Viaja como `POST /api/backend/reservation-requests/c7a3e9f1-4b2d-4e8a-9f60-2d5b8c1e7a93/approve`, sin body.
+
+**Respuesta** (200)
+
+```json
+{
+  "request": {
+    "id": "c7a3e9f1-4b2d-4e8a-9f60-2d5b8c1e7a93",
+    "code": "RES-2026-000042",
+    "externalReference": null,
+    "customerId": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42",
+    "commercialItemId": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57",
+    "conversationId": null,
+    "sourceChannel": "PHONE",
+    "reservationAt": "2026-11-08T01:00:00.000Z",
+    "numberOfPeople": 4,
+    "quotedPrice": "150.00",
+    "currency": "PEN",
+    "comments": "Consulta por una reserva familiar",
+    "specialRequirements": "Una silla para bebé",
+    "status": "ACCEPTED",
+    "createdAt": "2026-11-03T02:35:20.418Z",
+    "updatedAt": "2026-11-03T04:02:11.507Z",
+    "customer": { "id": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42", "firstName": "Carlos", "lastName": "Quispe", "phone": "987 654 321", "email": "carlos.quispe@example.com" },
+    "commercialItem": { "id": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57", "nameEs": "Trucha a la parrilla", "nameEn": "Grilled trout", "type": "DISH", "isActive": true, "approvalStatus": "APPROVED" }
+  },
+  "reservation": {
+    "assignedUserId": null,
+    "assignedUser": null,
+    "id": "f1e2d3c4-b5a6-4978-8a6b-5c4d3e2f1a09",
+    "code": "R-2026-000031",
+    "reservationRequestId": "c7a3e9f1-4b2d-4e8a-9f60-2d5b8c1e7a93",
+    "customerId": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42",
+    "commercialItemId": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57",
+    "reservationAt": "2026-11-08T01:00:00.000Z",
+    "numberOfPeople": 4,
+    "status": "CONFIRMED",
+    "notes": "Una silla para bebé",
+    "createdAt": "2026-11-03T04:02:11.498Z",
+    "updatedAt": "2026-11-03T04:02:11.498Z",
+    "customer": { "id": "3f6c2a8e-91b4-4d2f-8a7e-5c1d9b0e7f42", "firstName": "Carlos", "lastName": "Quispe", "phone": "987 654 321", "email": "carlos.quispe@example.com" },
+    "commercialItem": { "id": "6a2d9e14-7c3b-4f85-b0e2-1d8c4a9f3e57", "nameEs": "Trucha a la parrilla", "nameEn": "Grilled trout", "type": "DISH", "isActive": true, "approvalStatus": "APPROVED" }
+  }
+}
+```
+
+`request` es un [`ReservationRequest`](#reservationrequest) (sin `statusHistory`) y `reservation` una [`Reservation`](#reservation).
+
+**Errores**
+
+| Código | Mensaje | Cuándo |
+|---|---|---|
+| 400 | `Validation failed (uuid is expected)` | `:id` no es un UUID. |
+| 400 | `El elemento comercial debe estar activo y aprobado` | El elemento de la solicitud se desactivó o dejó de estar `APPROVED`: quítalo o cámbialo con `PATCH /reservation-requests/:id` y vuelve a aprobar. |
+| 401 | `Tu sesión terminó. Vuelve a iniciar sesión.` · `Inicia sesión para continuar.` | Los responde el BFF. Ver [Convenciones del módulo](#errores-que-ves-desde-el-navegador). |
+| 403 | `No tienes permisos para realizar esta acción` | El usuario no tiene ADMIN ni OWNER (p. ej. solo OPERATOR). |
+| 404 | `Solicitud de reserva no encontrada` | La solicitud no existe. |
+| 404 | `Elemento comercial no encontrado` | Defensivo. |
+| 409 | `Completa la fecha y el número de personas antes de aprobar la solicitud` | La solicitud está en `INCOMPLETE_DATA`. |
+| 409 | `La solicitud no se puede aprobar en su estado actual` | Está en `REJECTED`, `CANCELLED`, `MODIFICATION_REQUESTED` o `RENEGOTIATING`. Una rechazada no se aprueba: no hay vuelta atrás. |
+| 409 | `La fecha de la solicitud ya pasó: edítala antes de aprobarla` | `reservationAt` no es posterior a la hora del servidor. |
+| 409 | `Configura el restaurante antes de crear solicitudes o reservas` | Caso límite: el restaurante no está configurado. |
+| 409 | `Conflicto concurrente; vuelve a intentarlo` | La transacción siguió en conflicto tras 3 intentos. Aun así, hay como mucho una reserva: vuelve a pedirla y responderá 200 con ella. |
+| 409 | `El código o la solicitud ya están vinculados a una reserva` | Defensivo: otra aprobación simultánea creó la reserva. Vuelve a pedirla y responderá 200 con ella. |
+| 503 | `La zona horaria del restaurante no es válida` | Caso límite. |
+
+Orden: `:id` → solicitud (404) → ya aprobada (200 idempotente) → estado (409) → fecha futura (409) → elemento (404 o 400) → configuración (409).
+
+**Efectos**
+
+En una sola transacción:
+- Crea **una** reserva `CONFIRMED` con `code` `R-<año>-<secuencia>` y `reservationRequestId` = la solicitud, con los datos de la solicitud:
+  - el cliente, el elemento comercial, la fecha (`reservationAt`) y las personas;
+  - `notes` = `specialRequirements` de la solicitud;
+  - sin responsable (`assignedUserId: null`).
+
+  Aparece en el calendario (`GET /reservations`).
+- Pasa la solicitud a `ACCEPTED` y agrega a `statusHistory` el cambio (`<estado anterior>` → `ACCEPTED`), con `actorType: "USER"` y el usuario del token.
+
+Si ya estaba `ACCEPTED`, responde 200 con la misma solicitud y la misma reserva, sin escribir nada. Dos aprobaciones simultáneas dejan una sola reserva: la base de datos admite una por solicitud.
+
+No cambia el estado del cliente, no avisa al cliente ni al dueño, y no copia el precio cotizado a la reserva (la reserva no tiene precio).
+
+**Notas para el frontend**
+
+- Muestra «Aprobar» solo a ADMIN y OWNER y solo en `READY_TO_SEND` (más adelante también en `SENT_TO_OWNER` y `WAITING_RESPONSE`).
+- Pide confirmación: una aprobación no se deshace. Para anularla, cancela la reserva en el calendario (`PATCH /reservations/:id/status` con `CANCELLED`). La solicitud sigue `ACCEPTED`.
+- Avísale al cliente por la Bandeja: hoy el backend no lo hace solo.
+- Separación: la solicitud es lo que pidió el cliente y la reserva es lo que entra al calendario. Después de aprobar, edita la reserva, no la solicitud (una solicitud `ACCEPTED` no admite `PATCH`).
+
+## Rechazar solicitud de reserva
+`POST /reservation-requests/:id/reject`
+
+Desde el 10/11. El dueño o un administrador rechazan la solicitud. No crea reserva ni inicia una renegociación (eso es M10).
+
+| | |
+|---|---|
+| Roles | ADMIN, OWNER |
+| Respuesta | 200 · `ReservationRequest`, también al repetirla |
+| ft-crm | `requestsApi.reject(id: string, reason?: string): Promise<ReservationRequest>` · **nueva** |
+| Caché | Invalida `qk.requestsAll` (incluye `qk.request(id)`) y `qk.statsAll`. |
+
+**Parámetros de ruta**
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `id` | `Uuid` | Id de la solicitud. Si no es un UUID, responde 400. |
+
+**Body** (`RejectReservationRequestBody`)
+
+| Campo | Tipo | Obligatorio | Reglas |
+|---|---|---|---|
+| `reason` | string \| null | No | Motivo; trim, de 1 a 1000 caracteres. Se guarda en `statusHistory`. |
+
+**Ejemplo de petición**
+
+```ts
+const request = await requestsApi.reject("c7a3e9f1-4b2d-4e8a-9f60-2d5b8c1e7a93", "No hay mesas libres ese día");
+```
+
+Viaja como `POST /api/backend/reservation-requests/c7a3e9f1-4b2d-4e8a-9f60-2d5b8c1e7a93/reject` con `{ "reason": "No hay mesas libres ese día" }`. Sin motivo, el body es `{}`.
+
+**Respuesta** (200): el [`ReservationRequest`](#reservationrequest) con `"status": "REJECTED"`.
+
+**Errores**
+
+| Código | Mensaje | Cuándo |
+|---|---|---|
+| 400 | `Validation failed (uuid is expected)` | `:id` no es un UUID. |
+| 400 | `property <campo> should not exist` | Llega otro campo además de `reason`. |
+| 400 | `reason must be a string` · `reason should not be empty` · `reason must be shorter than or equal to 1000 characters` | `reason` no es texto, está vacío o solo tiene espacios, o pasa de 1000 caracteres. |
+| 401 | `Tu sesión terminó. Vuelve a iniciar sesión.` · `Inicia sesión para continuar.` | Los responde el BFF. |
+| 403 | `No tienes permisos para realizar esta acción` | El usuario no tiene ADMIN ni OWNER. |
+| 404 | `Solicitud de reserva no encontrada` | La solicitud no existe. |
+| 409 | `La solicitud ya fue aprobada: cancela su reserva desde el calendario` | Está en `ACCEPTED`. |
+| 409 | `La solicitud no se puede rechazar en su estado actual` | Está en `CANCELLED`, `MODIFICATION_REQUESTED` o `RENEGOTIATING`. |
+| 409 | `Conflicto concurrente; vuelve a intentarlo` | La transacción siguió en conflicto tras 3 intentos. |
+
+**Efectos**
+
+- Pasa la solicitud a `REJECTED` (final) y agrega a `statusHistory` el cambio, con `actorType: "USER"`, el usuario del token y el `reason`. Se puede rechazar desde `INCOMPLETE_DATA`, `READY_TO_SEND`, `SENT_TO_OWNER` o `WAITING_RESPONSE`.
+- Si ya estaba `REJECTED`, responde 200 sin cambios y no agrega otra entrada, aunque el `reason` sea distinto.
+- No crea reserva, no avisa al cliente y no cambia su estado.
+
+**Notas para el frontend**
+
+- Muestra «Rechazar» solo a ADMIN y OWNER y en los estados de arriba. Pide un motivo opcional y confirmación: un rechazo no se deshace.
+- Avísale al cliente por la Bandeja: hoy el backend no lo hace solo.
 
 ## Crear reserva manual
 `POST /reservations`
@@ -1830,7 +2062,7 @@ Ninguno (solo lectura).
 - Devuelve lo mismo que el listado más `noteHistory` y `rescheduleHistory`. Ambos vienen ordenados por `createdAt` ascendente (luego por `id`), sin paginar.
 - `assignedUser.isEligible` se calcula en cada lectura: el responsable está activo y hoy tiene ADMIN u OPERATOR. Si es `false`, muestra un aviso: un ADMIN puede reasignar la reserva. Si el usuario se borra de la base de datos, `assignedUserId` pasa a `null`.
 - `notes` es el texto general, editable con el PATCH. `noteHistory` son las observaciones con autor, que se crean con `POST /reservations/:id/notes`. Son independientes.
-- Con las rutas actuales, `reservationRequestId` siempre es `null`: la etiqueta «Aceptada por el dueño» de `ReservationSummary` nunca se mostrará en modo live.
+- Desde el 10/11, `reservationRequestId` trae la solicitud cuando la reserva nació de una [aprobación](#aprobar-solicitud-de-reserva); en las creadas a mano es `null`. La etiqueta «Aceptada por el dueño» de `ReservationSummary` ya se puede mostrar en modo live.
 - La reserva no trae canal. ft-crm muestra el `sourceChannel` del cliente con `customersApi.get(customerId)`.
 - `ReservationDetailPanel` carga la reserva por id, así que el panel sigue abierto aunque la reserva salga del periodo visible tras reprogramarla.
 - Usa `RESERVATION_STATUS_TRANSITIONS` y la hora de la reserva para decidir qué acciones mostrar (ver [Estados y transiciones](#estados-y-transiciones)).
@@ -2473,6 +2705,132 @@ No hay rutas nuevas: el backend lee el buzón del restaurante y crea las solicit
 - **Lo que ve Samanta.** Samanta recibe las solicitudes abiertas del cliente ([04 › Generar](04-bandeja-samanta.md#generar-un-borrador-con-samanta)). De las `WEBSITE` abiertas recibe además `specialRequirements` y `comments`, filtrados: sin las líneas que empiezan con `CRM: `, con los enlaces, correos y teléfonos cambiados por `[enlace]`, `[correo]` y `[número]`, y hasta 300 caracteres. Si alguien del equipo agrega una nota interna a una solicitud web abierta (`PATCH /reservation-requests/:id`), debe empezar la línea con `CRM: ` para que Samanta no la vea.
 - **Qué mostrar:** en Solicitudes, muestra `externalReference` como «Código web» y el canal `WEBSITE` como «Página web». Muestra `comments` con sus saltos de línea y destaca las líneas `CRM: `. El buscador de solicitudes no busca por `externalReference`.
 
+## Envío al WhatsApp del propietario
+
+Desde el 10/11 (M9.1). No hay rutas nuevas: el backend envía solo cada solicitud nueva al WhatsApp personal del propietario, para que la apruebe. Desde M9.2, sus respuestas se procesan solas ([Respuestas del propietario](#respuestas-del-propietario)). Una persona también puede decidir con [Aprobar](#aprobar-solicitud-de-reserva) o [Rechazar](#rechazar-solicitud-de-reserva), que aceptan `SENT_TO_OWNER` y `WAITING_RESPONSE`.
+
+**Qué solicitudes se envían.** Las que cumplen todo esto, revisadas cada `OWNER_APPROVAL_POLL_SECONDS` (15 s por defecto):
+- vienen de Samanta (un resumen confirmado) o de la web por correo; las creadas a mano con `POST /reservation-requests` no se envían;
+- están en `READY_TO_SEND`, con fecha futura y personas;
+- se crearon en las últimas `OWNER_APPROVAL_MAX_AGE_HOURS` (24 h por defecto), así que las anteriores a activar el envío no se mandan;
+- nunca se enviaron antes al propietario.
+
+Además, el servidor necesita `OWNER_APPROVAL_ENABLED=true`, WhatsApp activo y, en la configuración del restaurante, `ownerWhatsappNumber` y `approvalResponsibleId` (el usuario OWNER que decide) ([02](02-configuracion-catalogo.md)).
+
+**Mensaje.** Es una plantilla de WhatsApp aprobada en Meta (`OWNER_APPROVAL_TEMPLATE`, por defecto `aprobacion_reserva_propietario`) con tres botones: «Aceptar», «Rechazar» y «Proponer cambio». Pasa por el outbox con sus reintentos normales, y si sigue en cola más de 6 h, termina `FAILED`. Ejemplo:
+
+```text
+Nueva solicitud de reserva RES-2026-000043
+Cliente: Lucía Rojas (+51 987 654 321)
+Fecha: viernes 20/11/2026
+Hora: 19:30
+Personas: 4
+Servicio: Menú degustación
+Observaciones: Mesa junto a la ventana · Es un cumpleaños
+Origen: Página web (SM-20261110-9E49B1)
+Elige una opción. Con «Proponer cambio», escribe luego la nueva fecha, hora o personas.
+```
+
+Las observaciones son `specialRequirements` y las líneas de `comments` que no empiezan con `CRM: `, hasta 250 caracteres.
+
+**Conversación del propietario.** El mensaje queda en una conversación de WhatsApp con un contacto «Propietario» (el número de `ownerWhatsappNumber`, con la nota `CRM: número del propietario…`), con Samanta en pausa `MANUAL` para que nunca le responda. Aparece en la Bandeja y en Clientes. No le quites la pausa.
+
+**Estados.**
+
+| Paso | Estado | Historial |
+|---|---|---|
+| Se encola la plantilla | `READY_TO_SEND` → `SENT_TO_OWNER` | `SYSTEM`, «Enviada al WhatsApp del propietario para su aprobación.» |
+| WhatsApp acepta el mensaje (`SENT`, `DELIVERED` o `READ`) | `SENT_TO_OWNER` → `WAITING_RESPONSE` | `SYSTEM`, «WhatsApp aceptó el mensaje al propietario (SENT).» |
+| Un error transitorio se reintenta | Sigue en `SENT_TO_OWNER` | — |
+| El mensaje falla (`FAILED`) o queda en duda (`UNKNOWN`), también después de `WAITING_RESPONSE` | Vuelve a `READY_TO_SEND` | `SYSTEM`, con el código del error y «No se reenvía: apruébala o recházala a mano.» |
+
+Cada solicitud se envía **una sola vez**: la base de datos admite un mensaje por solicitud. Una que volvió a `READY_TO_SEND` por un fallo no se reenvía sola; la decide una persona.
+
+**Qué mostrar.**
+- En el detalle, `ownerMessage` trae el estado del mensaje al propietario: `{ id, status, errorCode, createdAt, sentAt, deliveredAt, providerReadAt }`, o `null` si no se envió. Muestra «Enviada al propietario», «Entregada» o «Leída», o el error.
+- `SENT_TO_OWNER` y `WAITING_RESPONSE` no admiten `PATCH` ni cancelar (409 `La solicitud no admite modificaciones en su estado actual`). Sí admiten aprobar y rechazar.
+- Los estados cambian sin acción del usuario: refresca las solicitudes con el polling que ya existe.
+
+### Respuestas del propietario
+
+Desde el 10/11 (M9.2). Cuando el propietario responde en su WhatsApp, el backend lo procesa en la misma transacción en que guarda el mensaje, **antes que Samanta**: un mensaje del propietario nunca es un turno de cliente, y Samanta no le contesta aunque alguien quite la pausa de esa conversación (el backend la vuelve a pausar). No hay rutas nuevas, y esto funciona aunque `OWNER_APPROVAL_ENABLED` esté apagado.
+
+**Quién es el propietario.** Es el mensaje de WhatsApp cuyo remitente, según el teléfono que informa Meta, es exactamente `ownerWhatsappNumber` de la configuración actual. Si Meta oculta el teléfono, o lo envía otro número, el mensaje se trata como el de cualquier cliente y no decide nada.
+
+**A qué solicitud responde.** Solo a solicitudes que se le enviaron a él, en esa conversación:
+- **Botón** («Aceptar», «Rechazar» o «Proponer cambio»): la solicitud cuyo mensaje responde el botón (`context.id` de WhatsApp = el mensaje de la plantilla).
+- **Texto escrito:** necesita **el código** de la solicitud (`RES-…`) y una sola decisión: `ACEPTAR`, `RECHAZAR`, `PROPONER CAMBIO` o `MODIFICAR` (sin distinguir mayúsculas ni tildes). Un «Aceptar» escrito sin código **nunca** aprueba nada.
+
+| Respuesta | Efecto | `ownerReplyOutcome` |
+|---|---|---|
+| Aceptar | Aprueba con la lógica de [Aprobar](#aprobar-solicitud-de-reserva): `ACCEPTED` y una reserva `CONFIRMED` en el calendario. Historial con `actorType: "OWNER"` y `actorId` = `approvalResponsibleId` | `ACCEPTED` |
+| Rechazar | Rechaza con la lógica de [Rechazar](#rechazar-solicitud-de-reserva). Sin reserva. Historial `OWNER` con «Rechazada por el propietario por WhatsApp.» | `REJECTED` |
+| Proponer cambio | `MODIFICATION_REQUESTED`, historial `OWNER`. No crea reserva. Se le pide al propietario que escriba la propuesta | `MODIFICATION_REQUESTED` |
+| Texto sin decisión tras «Proponer cambio» | Se agrega a `comments` de esa solicitud como `CRM: propuesta del propietario (dd/mm hh:mm): …` (hasta 500 caracteres). **No cambia** la fecha, las personas ni el servicio | `DETAILS_ADDED` |
+| Una decisión sobre una solicitud ya resuelta (aceptada, rechazada, cancelada o con un cambio propuesto) | Nada | `ALREADY_RESOLVED` |
+| La aprobación no procede (fecha pasada, servicio retirado…) | Nada | `NOT_APPLICABLE` |
+| Texto con una decisión pero sin código, varias decisiones o varios códigos | Nada | `AMBIGUOUS` |
+| Un código que no se le envió, o un botón de otro mensaje | Nada | `UNKNOWN_REQUEST` |
+| Falta `approvalResponsibleId` en la configuración | Nada | `NOT_CONFIGURED` |
+| Otro texto sin decisión ni propuesta pendiente | Nada, sin respuesta | `NO_ACTION` |
+| Audio, imagen u otro tipo | Nada, sin respuesta | `UNSUPPORTED` |
+
+Salvo en los dos últimos casos, el backend le contesta al propietario en su conversación con un texto fijo (p. ej. «Listo: la solicitud RES-2026-000043 quedó ACEPTADA y la reserva R-2026-000031 ya está en el calendario. Le avisamos al cliente por WhatsApp.» o una aclaración de cómo responder), como un mensaje de Samanta (`authorUserId` = `SAMANTA_USER_ID`). Desde M9.3, tras Aceptar, Rechazar o Proponer cambio el backend también avisa al cliente ([Aviso al cliente](#aviso-al-cliente-de-la-decisión)), y la respuesta al propietario termina diciendo si se le avisó o por qué no.
+
+**Duplicados y concurrencia.** Un webhook repetido es un solo mensaje, y cada mensaje se procesa una vez. Dos respuestas a la vez («Aceptar» y «Rechazar») se ordenan sobre la solicitud: se aplica la primera y la otra queda `ALREADY_RESOLVED`. Siempre hay como mucho una reserva.
+
+**Qué mostrar.** El historial de la solicitud muestra las decisiones del propietario (`actorType: "OWNER"`, con su nombre en `actor`). Una solicitud en `MODIFICATION_REQUESTED` necesita a una persona: lee la propuesta en `comments` y coordínala con el cliente. Hoy no hay ruta para pasarla a otro estado; la renegociación es M10. `ownerReplyOutcome` queda guardado en el mensaje del propietario, pero la API de mensajes todavía no lo devuelve.
+
+### Aviso al cliente de la decisión
+
+Desde el 10/11 (M9.3). Cuando el propietario **acepta, rechaza o propone un cambio desde su WhatsApp** ([Respuestas del propietario](#respuestas-del-propietario)), el backend avisa al cliente solo. No hay rutas nuevas. Las decisiones tomadas en el CRM con [Aprobar](#aprobar-solicitud-de-reserva) o [Rechazar](#rechazar-solicitud-de-reserva) **no** avisan al cliente: ahí lo hace una persona por la Bandeja.
+
+**Cuándo se envía.** El aviso se pone en cola en la **misma transacción** que aplica la decisión, y el outbox lo envía después del commit. Así, el aviso de aceptación solo sale cuando la reserva `CONFIRMED` ya existe en PostgreSQL. Si la transacción falla, no queda ni la decisión ni el aviso.
+
+**Por dónde.**
+1. **Solicitud de Samanta** (`conversationId` no nulo): en esa misma conversación (WhatsApp, Messenger o Instagram).
+2. **Solicitud de la web** (`sourceChannel: "WEBSITE"`): en la conversación de WhatsApp del cliente, si existe.
+3. **Nunca** en la conversación del propietario: si el teléfono del cliente es el del propietario, no se envía (`OWNER_NUMBER`).
+
+**Cómo.**
+- **Ventana de 24 h abierta** (el cliente escribió en las últimas 24 h): un texto normal, en el idioma del resumen de Samanta (español o inglés).
+- **Ventana cerrada, solo en WhatsApp:** la plantilla aprobada de la decisión, en español. Solo se usa si se cumple todo esto:
+  - el cliente nos dio ese WhatsApp: nos escribió por ahí, o el formulario web lo trajo (el importador lo validó);
+  - `CUSTOMER_DECISION_TEMPLATES_ENABLED=true`;
+  - WhatsApp está activo.
+- **Ventana cerrada en Messenger o Instagram:** no se envía nada (`WINDOW_CLOSED`). Nunca se manda texto libre fuera de la ventana.
+- **Conversación atendida por una persona** (pausa manual, o cualquier pausa de las últimas 24 h, la misma regla que el contacto de la web): no se envía (`PERSON_ATTENDING`). La persona avisa al cliente.
+
+**Qué dice.**
+
+| Decisión | Texto (resumido) |
+|---|---|
+| Aceptar | «… aprobó tu solicitud RES-…. Tu reserva R-… está confirmada para el dd/mm/aaaa a las hh:mm, N personas.» Los datos salen de la reserva creada |
+| Rechazar | «… no pudo aprobar tu solicitud de reserva RES-…. No se registró ninguna reserva…». Nunca dice «confirmada» |
+| Proponer cambio | «… revisó tu solicitud RES-… y propone un cambio. Una persona del equipo te escribirá…; por ahora la reserva no está confirmada.» No cambia la solicitud, y la conversación del cliente queda en pausa `SAMANTA_HANDOFF` para que la atienda una persona |
+
+**Un solo aviso.** Cada solicitud tiene como mucho un aviso (`customerNoticeMessageId` único y clave de idempotencia `decision-<solicitud>-<estado>`). Los webhooks repetidos, el segundo toque y las respuestas simultáneas del propietario no lo duplican. Los reintentos son los del outbox, y el mensaje registra `SENT`, `DELIVERED`, `READ` o `FAILED` como cualquier otro. Un aviso fallido **no** deshace la decisión.
+
+**Cuando no se pudo avisar.** `customerNoticeError` guarda el motivo, y `comments` recibe la nota `CRM: no se avisó al cliente la decisión del propietario (aceptada|rechazada|cambio propuesto): <motivo>.`. El propietario también lo lee en la respuesta del backend.
+
+| `customerNoticeError` | Motivo |
+|---|---|
+| `NO_CONSENT` | No nos escribió por WhatsApp ni dio su WhatsApp en el formulario |
+| `PERSON_ATTENDING` | Una persona atiende su conversación |
+| `WINDOW_CLOSED` | Pasaron más de 24 h desde su último mensaje, en un canal sin plantillas (Messenger, Instagram) |
+| `TEMPLATES_OFF` | Pasaron más de 24 h y las plantillas de aviso están desactivadas |
+| `INCOMPLETE_FOR_TEMPLATE` | Faltan la fecha, la hora o las personas para la plantilla |
+| `CHANNEL_DISABLED` | El canal está desactivado en el servidor |
+| `NO_RECIPIENT` | El canal no acepta su contacto |
+| `OWNER_NUMBER` | El teléfono del cliente es el del propietario |
+
+**Samanta después de la decisión.** Si el cliente vuelve a responder «sí» al resumen, Samanta ya no dice «pendiente de aprobación»: repite la decisión (`reservationOutcome: "ALREADY_DECIDED"`). Con un cambio propuesto, además pasa la conversación a una persona.
+
+**Qué mostrar.** En el detalle:
+- `customerNoticeMessage` trae el aviso y su estado: «Cliente avisado», «Entregado», «Leído» o «Falló». Si `templateName` no es nulo, se usó plantilla.
+- Si `customerNoticeError` no es nulo, muestra una alerta «Avisar al cliente» con el motivo.
+- Si ambos son nulos y la solicitud ya se decidió, la decisión se tomó en el CRM (sin aviso automático) o antes de M9.3.
+
 ## Modelos
 
 Recursos que devuelve el módulo. «Null» indica si el campo puede llegar en `null`; los campos siempre están presentes. Las fechas son instantes ISO 8601 en UTC.
@@ -2542,7 +2900,7 @@ Cliente dentro de solicitudes, reservas y conversaciones. Refleja los datos actu
 
 ### `ReservationRequest`
 
-Respuesta de todas las rutas de `/reservation-requests`.
+Respuesta de las rutas de `/reservation-requests`, salvo el detalle (`GET /reservation-requests/:id`), que devuelve [`ReservationRequestDetail`](#reservationrequestdetail).
 
 | Campo | Tipo | Null | Significado |
 |---|---|---|---|
@@ -2551,6 +2909,7 @@ Respuesta de todas las rutas de `/reservation-requests`.
 | `externalReference` | string | Sí | Código que trajo la solicitud desde fuera del CRM, p. ej. el de la web (`SM-20261029-B65A25`). Único. `null` en las creadas en el CRM. Desde el 9/11 ([Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). |
 | `customerId` | `Uuid` | No | Cliente. Editable. |
 | `commercialItemId` | `Uuid` | Sí | Elemento comercial. |
+| `conversationId` | `Uuid` | Sí | Desde el 10/11. Conversación de la Bandeja vinculada; siempre del mismo cliente. `null` si no hay (las importadas de la web y las anteriores al 10/11 llegan en `null`). |
 | `sourceChannel` | `ContactChannel` | No | Canal por el que llegó la solicitud; no se hereda del cliente. |
 | `reservationAt` | `IsoDateTime` | Sí | Fecha y hora pedidas. |
 | `numberOfPeople` | number | Sí | Personas (≥ 1). |
@@ -2564,6 +2923,30 @@ Respuesta de todas las rutas de `/reservation-requests`.
 | `customer` | `CustomerSummary` | No | Resumen del cliente. |
 | `commercialItem` | `CommercialItemSummary` | Sí | Resumen del elemento, o `null`. |
 
+### `ReservationRequestDetail`
+
+Respuesta de `GET /reservation-requests/:id` (desde el 10/11): `ReservationRequest` más:
+- `statusHistory: ReservationRequestStatusEntry[]`, por `createdAt` ascendente y luego por `id`, sin paginar;
+- `reservation`: la reserva creada al [aprobar](#aprobar-solicitud-de-reserva) la solicitud, como `{ id, code, status, reservationAt }`, o `null` si no se aprobó. Refleja el estado actual de la reserva (p. ej. `CANCELLED` si se canceló en el calendario).
+- `ownerMessage` (desde el 10/11): el mensaje de WhatsApp que pidió la aprobación al propietario, como `{ id, status, errorCode, createdAt, sentAt, deliveredAt, providerReadAt }`, o `null` si no se envió ([Envío al WhatsApp del propietario](#envío-al-whatsapp-del-propietario)).
+- `customerNoticeMessage` (M9.3): el aviso al cliente de la decisión del propietario, como `{ id, conversationId, channel, templateName, status, errorCode, createdAt, sentAt, deliveredAt, providerReadAt }`, o `null` ([Aviso al cliente](#aviso-al-cliente-de-la-decisión)).
+- `customerNoticeError` (M9.3): por qué no se pudo avisar al cliente, o `null`. Nunca viene junto con `customerNoticeMessage`.
+
+### `ReservationRequestStatusEntry`
+
+Elementos de `statusHistory`. Una entrada por **cambio** de estado: crear la solicitud o editarla sin cambiar el estado no deja entrada, y `previousStatus` siempre es distinto de `newStatus` (lo garantiza también la base de datos). Se escribe en la misma transacción que el cambio. No trae `reservationRequestId`.
+
+| Campo | Tipo | Null | Significado |
+|---|---|---|---|
+| `id` | `Uuid` | No | Id de la entrada. |
+| `previousStatus` | `ReservationRequestStatus` | No | Estado anterior. |
+| `newStatus` | `ReservationRequestStatus` | No | Estado nuevo. |
+| `actorType` | `ReservationRequestActorType` | No | Quién hizo el cambio: `USER` (un usuario del CRM), `SAMANTA`, `OWNER` (el dueño, al responder la aprobación) o `SYSTEM` (el backend solo, p. ej. por tiempo). Hoy se generan `USER` (rutas del CRM), `SYSTEM` (envío al propietario) y `OWNER` (respuestas del propietario por WhatsApp, con `actorId` = `approvalResponsibleId`). |
+| `actorId` | `Uuid` | Sí | Usuario que actuó (para `SAMANTA`, el usuario de sistema `SAMANTA_USER_ID`). Solo puede ser `null` con `SYSTEM`. |
+| `reason` | string | Sí | Motivo (hasta 1000): el `reason` de una cancelación o un rechazo, o el texto del backend en los cambios `SYSTEM` y `OWNER`. |
+| `createdAt` | `IsoDateTime` | No | Hora del cambio. |
+| `actor` | `PublicUser` | Sí | `{ id, firstName, lastName }` de `actorId`, o `null`. |
+
 ### `Reservation`
 
 Respuesta de `GET /reservations` y de las escrituras de reservas, salvo las observaciones.
@@ -2574,7 +2957,7 @@ Respuesta de `GET /reservations` y de las escrituras de reservas, salvo las obse
 | `assignedUser` | `AssignedUser` | Sí | Datos del responsable, o `null`. |
 | `id` | `Uuid` | No | Id de la reserva. |
 | `code` | string | No | `R-<año>-<secuencia>`. Único; no cambia nunca. |
-| `reservationRequestId` | `Uuid` | Sí | Solicitud de origen. Siempre `null` con las rutas actuales. |
+| `reservationRequestId` | `Uuid` | Sí | Solicitud de origen: la que se aprobó con `POST /reservation-requests/:id/approve` (desde el 10/11). `null` en las reservas creadas a mano. Única: una solicitud tiene como mucho una reserva. |
 | `customerId` | `Uuid` | No | Cliente. |
 | `commercialItemId` | `Uuid` | Sí | Elemento comercial. |
 | `reservationAt` | `IsoDateTime` | No | Fecha y hora de la reserva; ordena el calendario. |
@@ -2640,14 +3023,14 @@ Elementos de `rescheduleHistory`. No trae `reservationId`.
 | `NEW` | Nuevo | Al crear el cliente, a mano o con su primer mensaje de WhatsApp, Messenger o Instagram. |
 | `INTERESTED` | Interesado | Solo con `PATCH /customers/:id/status`. |
 | `IN_CONVERSATION` | En conversación | Solo con `PATCH /customers/:id/status`. |
-| `REQUESTED_RESERVATION` | Solicitó reserva | Con `PATCH /customers/:id/status` y, desde el 9/11, automático con las reservas de la web: un cliente nuevo nace así, y uno existente en `NEW`, `INTERESTED` o `IN_CONVERSATION` pasa a este estado. |
+| `REQUESTED_RESERVATION` | Solicitó reserva | Con `PATCH /customers/:id/status` y, desde el 9/11, automático con las reservas de la web: un cliente nuevo nace así, y uno existente en `NEW`, `INTERESTED` o `IN_CONVERSATION` pasa a este estado. Desde el 10/11, también cuando Samanta registra una solicitud del cliente. |
 | `CONFIRMED` | Confirmado | Solo con `PATCH /customers/:id/status`. |
 | `REJECTED` | Rechazado | Solo con `PATCH /customers/:id/status`. |
 | `LOST` | Perdido | Solo con `PATCH /customers/:id/status`. |
 | `RECURRENT` | Recurrente | Solo con `PATCH /customers/:id/status`. |
 
 - Transiciones: de cualquier estado a cualquier otro, incluido el mismo, con `PATCH /customers/:id/status` (ADMIN, OPERATOR). No hay transición prohibida ni error de transición.
-- Automáticas: solo la de las reservas de la web, a `REQUESTED_RESERVATION` (desde el 9/11; [Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)). Los mensajes, los intereses, las solicitudes creadas con la API y las reservas no cambian el estado. El código tiene pendiente integrar `REQUESTED_RESERVATION` y `CONFIRMED` con las reservas.
+- Automáticas: solo a `REQUESTED_RESERVATION`, con las reservas de la web (desde el 9/11; [Solicitudes que llegan de la web](#solicitudes-que-llegan-de-la-web)) y con las solicitudes que registra Samanta (desde el 10/11). Los mensajes, los intereses, las solicitudes creadas con la API y las reservas no cambian el estado. El código tiene pendiente integrar `REQUESTED_RESERVATION` y `CONFIRMED` con las reservas.
 - Un valor fuera del enum responde 400 `status must be one of the following values: NEW, INTERESTED, IN_CONVERSATION, REQUESTED_RESERVATION, CONFIRMED, REJECTED, LOST, RECURRENT`.
 
 ### Estado de la solicitud (`ReservationRequestStatus`)
@@ -2656,11 +3039,11 @@ Elementos de `rescheduleHistory`. No trae `reservationId`.
 |---|---|---|
 | `INCOMPLETE_DATA` | Negociando | Automático: falta `reservationAt` o `numberOfPeople`. |
 | `READY_TO_SEND` | Lista para enviar | Automático: hay `reservationAt` y `numberOfPeople`. |
-| `SENT_TO_OWNER` | Enviada al dueño | Reservado para el flujo del dueño. Ninguna ruta lo asigna. |
-| `WAITING_RESPONSE` | Esperando al dueño | Igual: ninguna ruta lo asigna. |
-| `ACCEPTED` | Aceptada | Igual: ninguna ruta lo asigna. |
-| `REJECTED` | Rechazada | Igual: ninguna ruta lo asigna. |
-| `MODIFICATION_REQUESTED` | Cambios solicitados | Igual: ninguna ruta lo asigna. |
+| `SENT_TO_OWNER` | Enviada al dueño | Desde el 10/11: el backend encoló la plantilla al WhatsApp del propietario ([Envío al WhatsApp del propietario](#envío-al-whatsapp-del-propietario)). |
+| `WAITING_RESPONSE` | Esperando al dueño | Desde el 10/11: WhatsApp aceptó el mensaje al propietario y se espera su respuesta ([Respuestas del propietario](#respuestas-del-propietario)). |
+| `ACCEPTED` | Aceptada | Final. Desde el 10/11, con `POST /reservation-requests/:id/approve`: tiene su reserva en el calendario (`reservation`). |
+| `REJECTED` | Rechazada | Final. Desde el 10/11, con `POST /reservation-requests/:id/reject`. |
+| `MODIFICATION_REQUESTED` | Cambios solicitados | Desde el 10/11: el propietario respondió «Proponer cambio». Necesita a una persona; su propuesta queda en `comments`. Ninguna ruta lo cambia todavía (M10). |
 | `RENEGOTIATING` | Renegociando | Igual: ninguna ruta lo asigna. |
 | `CANCELLED` | Cancelada | Manual y final. |
 
@@ -2668,10 +3051,19 @@ Elementos de `rescheduleHistory`. No trae `reservationId`.
 |---|---|---|---|
 | (alta) | `INCOMPLETE_DATA` o `READY_TO_SEND` | `POST /reservation-requests`; lo calcula el backend | ADMIN, OPERATOR |
 | (alta) | `INCOMPLETE_DATA` o `READY_TO_SEND` | Una reserva de la web que llega por correo (desde el 9/11); lo calcula el backend | Sistema |
+| (alta) | `READY_TO_SEND` | El cliente confirma en la conversación un resumen de Samanta automática (desde el 10/11; siempre trae fecha y personas) | Samanta |
 | `INCOMPLETE_DATA` | `READY_TO_SEND` | `PATCH /reservation-requests/:id` que deja fecha y personas | ADMIN, OPERATOR |
 | `READY_TO_SEND` | `INCOMPLETE_DATA` | `PATCH /reservation-requests/:id` con `reservationAt: null` o `numberOfPeople: null` | ADMIN, OPERATOR |
 | `INCOMPLETE_DATA`, `READY_TO_SEND` | `CANCELLED` | `PATCH /reservation-requests/:id/status` con `{ "status": "CANCELLED" }` | ADMIN, OPERATOR |
 | `CANCELLED` | `CANCELLED` | La misma ruta: 200 sin cambios | ADMIN, OPERATOR |
+| `READY_TO_SEND`, `SENT_TO_OWNER`, `WAITING_RESPONSE` | `ACCEPTED` | `POST /reservation-requests/:id/approve` (10/11); crea la reserva `CONFIRMED` | ADMIN, OWNER |
+| `INCOMPLETE_DATA`, `READY_TO_SEND`, `SENT_TO_OWNER`, `WAITING_RESPONSE` | `REJECTED` | `POST /reservation-requests/:id/reject` (10/11) | ADMIN, OWNER |
+| `ACCEPTED` · `REJECTED` | El mismo | La misma ruta: 200 sin cambios | ADMIN, OWNER |
+| `READY_TO_SEND` | `SENT_TO_OWNER` | El backend envía la plantilla al propietario (10/11) | Sistema |
+| `SENT_TO_OWNER` | `WAITING_RESPONSE` | WhatsApp aceptó el mensaje | Sistema |
+| `SENT_TO_OWNER`, `WAITING_RESPONSE` | `READY_TO_SEND` | El mensaje falló o quedó en duda; no se reenvía | Sistema |
+
+Historial (desde el 10/11): cada fila de esta tabla que cambia el estado deja una entrada en `statusHistory` ([`ReservationRequestStatusEntry`](#reservationrequeststatusentry)) con el usuario del token. Las altas (filas «(alta)») y `CANCELLED` → `CANCELLED` no dejan entrada.
 
 Errores de una transición no permitida:
 - Editar o cancelar fuera de `INCOMPLETE_DATA` y `READY_TO_SEND` (salvo cancelar una ya cancelada): 409 `La solicitud no admite modificaciones en su estado actual`.
@@ -2723,8 +3115,8 @@ Errores de una transición u operación no permitida:
 ## Preguntas abiertas
 
 1. La respuesta de clientes no expone la identidad de proveedor (`providerAccountId`/`externalContactId`). Por eso el frontend no sabe de antemano si un cliente `FACEBOOK` o `INSTAGRAM` viene de Messenger o de Instagram (canal bloqueado y contacto opcional): solo lo descubre al recibir el 400 `No se puede cambiar el canal de una identidad del proveedor`. ¿Se añadirá un indicador, por ejemplo `hasProviderIdentity`?
-2. `PATCH /customers/:id/status` acepta cualquier transición, y el estado del cliente no se sincroniza con solicitudes, reservas ni conversaciones (hay un TODO en `customers.service.ts`). La única excepción, desde el 9/11, son las reservas de la web, que lo pasan a `REQUESTED_RESERVATION`. ¿Qué flujo debe imponer la UI? Por ejemplo, ¿pasar a `REQUESTED_RESERVATION` al crear una solicitud?
-3. No hay ruta para enviar una solicitud al dueño, aceptarla o convertirla en reserva: `reservationRequestId` siempre es `null` y los estados `SENT_TO_OWNER`, `WAITING_RESPONSE`, `ACCEPTED`, `REJECTED`, `MODIFICATION_REQUESTED` y `RENEGOTIATING` no se alcanzan. Samanta tampoco crea solicitudes. ¿Deben aparecer ya en los filtros y KPI de la UI? ¿Cuándo llega el flujo de aprobación?
+2. `PATCH /customers/:id/status` acepta cualquier transición, y el estado del cliente no se sincroniza con solicitudes, reservas ni conversaciones (hay un TODO en `customers.service.ts`). Las únicas excepciones son las reservas de la web (9/11) y las solicitudes que registra Samanta (10/11), que lo pasan a `REQUESTED_RESERVATION`. ¿Qué flujo debe imponer la UI? Por ejemplo, ¿pasar a `REQUESTED_RESERVATION` al crear una solicitud?
+3. Desde el 10/11, el dueño o un administrador aprueban (crea la reserva) o rechazan una solicitud a mano, y las solicitudes de Samanta y de la web se envían al WhatsApp del propietario (`SENT_TO_OWNER` → `WAITING_RESPONSE`). Desde M9.2 se procesan sus respuestas (aceptar, rechazar o proponer un cambio → `MODIFICATION_REQUESTED`). Todavía no hay renegociación (M10): `RENEGOTIATING` no se alcanza y una solicitud en `MODIFICATION_REQUESTED` no tiene ruta para avanzar. Desde el 10/11, Samanta automática crea solicitudes en `READY_TO_SEND` vinculadas a su conversación, pero no las envía al dueño. ¿Deben aparecer ya en los filtros y KPI de la UI? ¿Cuándo llega el flujo de aprobación?
 4. `GET /reservations` devuelve como máximo 100 reservas por página y no tiene filtro de reservas sin responsable. ¿El calendario necesita un modo sin paginación o un filtro tipo `unassigned`?
 5. Los mensajes de validación (400) llegan en inglés y como arreglo, y los de negocio en español como texto. ¿El frontend debe traducir los de validación, o el backend los personalizará?
 6. No existe fusión de clientes: si un cliente (también uno de Messenger) recibe un teléfono o email que ya es de otro, la respuesta es 409 `Ya existe un cliente con ese teléfono o correo`. ¿Se planea un flujo de fusión o de vinculación de identidades?
@@ -2739,7 +3131,7 @@ Errores de una transición u operación no permitida:
 
 Bloque autocontenido: compila con `tsc --noEmit --strict --target es2022 --lib es2022,dom --module esnext --moduleResolution bundler`.
 - Los tipos compartidos (`Uuid`, `IsoDateTime`, `Paginated<T>`…) repiten la definición de `ft-crm/src/lib/api/types.ts`. `ApiErrorBody` usa la forma ampliada de [05](05-implementacion-ft-crm.md#22-typests): `code?: BffErrorCode` y los campos del 500 (`path`, `method`, `timestamp`). En el frontend, decláralos una sola vez.
-- Los tipos que ft-crm ya tiene (`Customer`, `ReservationRequest`, `Reservation`, `ReservationDetail`…) coinciden con el backend, salvo `ReservationRequest.externalReference`, nuevo del 9/11.
+- Los tipos que ft-crm ya tiene (`Customer`, `ReservationRequest`, `Reservation`, `ReservationDetail`…) coinciden con el backend, salvo `ReservationRequest.externalReference` (9/11) y lo del 10/11: `ReservationRequest.conversationId`, `ReservationRequestDetail`, `ReservationRequestStatusEntry`, `ReservationRequestActorType`, `CancelReservationRequestBody.reason` y el filtro `conversationId`.
 - Los nuevos siguen el estilo de cada familia: `…Request` en clientes (como `UpdateCustomerStatusRequest`) y `…Body` en solicitudes y reservas (como `CancelReservationRequestBody`).
 
 ```ts
@@ -2982,6 +3374,8 @@ export interface ReservationRequest {
   externalReference: string | null;
   customerId: Uuid;
   commercialItemId: Uuid | null;
+  /** Conversación vinculada, siempre del mismo cliente; null si no hay. Desde el 10/11. */
+  conversationId: Uuid | null;
   sourceChannel: ContactChannel;
   /** null mientras falta la fecha. */
   reservationAt: IsoDateTime | null;
@@ -3004,6 +3398,66 @@ export interface ReservationRequest {
   commercialItem: CommercialItemSummary | null;
 }
 
+export const RESERVATION_REQUEST_ACTOR_TYPES = ["USER", "SAMANTA", "OWNER", "SYSTEM"] as const;
+/** Hoy se generan USER, SYSTEM (envío al propietario) y OWNER (sus respuestas); SAMANTA todavía no. */
+export type ReservationRequestActorType = (typeof RESERVATION_REQUEST_ACTOR_TYPES)[number];
+
+/** Un cambio de estado de la solicitud (previousStatus !== newStatus). */
+export interface ReservationRequestStatusEntry {
+  id: Uuid;
+  previousStatus: ReservationRequestStatus;
+  newStatus: ReservationRequestStatus;
+  actorType: ReservationRequestActorType;
+  /** null solo con actorType SYSTEM. */
+  actorId: Uuid | null;
+  /** reason de una cancelación o un rechazo, o el texto del backend en los cambios SYSTEM y OWNER. */
+  reason: string | null;
+  createdAt: IsoDateTime;
+  actor: PublicUser | null;
+}
+
+/** Respuesta de GET /reservation-requests/:id. statusHistory: createdAt ascendente, sin paginar. */
+export interface ReservationRequestDetail extends ReservationRequest {
+  statusHistory: ReservationRequestStatusEntry[];
+  /** Reserva creada al aprobar (10/11), con su estado actual; null si no se aprobó. */
+  reservation: { id: Uuid; code: string; status: ReservationStatus; reservationAt: IsoDateTime } | null;
+  /** Mensaje de WhatsApp que pidió la aprobación al propietario (10/11); null si no se envió. */
+  ownerMessage: {
+    id: Uuid;
+    status: "QUEUED" | "SENDING" | "SENT" | "DELIVERED" | "READ" | "UNKNOWN" | "FAILED";
+    errorCode: string | null;
+    createdAt: IsoDateTime;
+    sentAt: IsoDateTime | null;
+    deliveredAt: IsoDateTime | null;
+    providerReadAt: IsoDateTime | null;
+  } | null;
+  /** M9.3: aviso al cliente de la decisión del propietario; null si no hubo. */
+  customerNoticeMessage: {
+    id: Uuid;
+    conversationId: Uuid;
+    channel: "WHATSAPP" | "FACEBOOK" | "INSTAGRAM";
+    /** No nulo si se envió como plantilla (ventana de 24 h cerrada). */
+    templateName: string | null;
+    status: "QUEUED" | "SENDING" | "SENT" | "DELIVERED" | "READ" | "UNKNOWN" | "FAILED";
+    errorCode: string | null;
+    createdAt: IsoDateTime;
+    sentAt: IsoDateTime | null;
+    deliveredAt: IsoDateTime | null;
+    providerReadAt: IsoDateTime | null;
+  } | null;
+  /** M9.3: por qué no se avisó al cliente; null si se avisó o no correspondía. */
+  customerNoticeError:
+    | "NO_CONSENT"
+    | "PERSON_ATTENDING"
+    | "WINDOW_CLOSED"
+    | "TEMPLATES_OFF"
+    | "INCOMPLETE_FOR_TEMPLATE"
+    | "CHANNEL_DISABLED"
+    | "NO_RECIPIENT"
+    | "OWNER_NUMBER"
+    | null;
+}
+
 /** Query de GET /reservation-requests. Rango: dateFrom <= reservationAt < dateTo. */
 export interface ReservationRequestListQuery {
   page?: number;
@@ -3018,6 +3472,8 @@ export interface ReservationRequestListQuery {
   /** Filtra el sourceChannel de la solicitud. */
   channel?: ContactChannel;
   commercialItemId?: Uuid;
+  /** Solicitudes vinculadas a esa conversación. */
+  conversationId?: Uuid;
   /** Busca en el código y en el nombre, apellido o teléfono del cliente (no en el email). */
   search?: string;
 }
@@ -3028,6 +3484,8 @@ export interface CreateReservationRequestBody {
   sourceChannel: ContactChannel;
   /** Activo y APPROVED. */
   commercialItemId?: Uuid | null;
+  /** Conversación del mismo cliente. */
+  conversationId?: Uuid | null;
   /** Estrictamente futura. */
   reservationAt?: IsoDateTime | null;
   /** Entero >= 1 (número JSON, no texto). */
@@ -3046,6 +3504,8 @@ export interface UpdateReservationRequestBody {
   /** No admite null. */
   sourceChannel?: ContactChannel;
   commercialItemId?: Uuid | null;
+  /** Conversación del cliente de la solicitud; null desvincula. */
+  conversationId?: Uuid | null;
   /** Si llega, tiene que ser futura aunque no cambie. */
   reservationAt?: IsoDateTime | null;
   numberOfPeople?: number | null;
@@ -3059,6 +3519,20 @@ export interface UpdateReservationRequestBody {
 /** Body de PATCH /reservation-requests/:id/status (solo permite cancelar). */
 export interface CancelReservationRequestBody {
   status: "CANCELLED";
+  /** Motivo (1–1000, con trim); se guarda en statusHistory. */
+  reason?: string | null;
+}
+
+/** Body de POST /reservation-requests/:id/reject (10/11). */
+export interface RejectReservationRequestBody {
+  /** Motivo (1–1000, con trim); se guarda en statusHistory. */
+  reason?: string | null;
+}
+
+/** Respuesta de POST /reservation-requests/:id/approve (10/11): la solicitud ACCEPTED y su reserva CONFIRMED. */
+export interface ReservationRequestApproval {
+  request: ReservationRequest;
+  reservation: Reservation;
 }
 
 /* ========================== Reservas (calendario) ========================== */
@@ -3278,7 +3752,7 @@ export interface ClientesReservasRoutes {
     query: ReservationRequestListQuery;
     response: Paginated<ReservationRequest>;
   };
-  "GET /reservation-requests/:id": { status: 200; params: { id: Uuid }; response: ReservationRequest };
+  "GET /reservation-requests/:id": { status: 200; params: { id: Uuid }; response: ReservationRequestDetail };
   "PATCH /reservation-requests/:id": {
     status: 200;
     params: { id: Uuid };
@@ -3289,6 +3763,13 @@ export interface ClientesReservasRoutes {
     status: 200;
     params: { id: Uuid };
     body: CancelReservationRequestBody;
+    response: ReservationRequest;
+  };
+  "POST /reservation-requests/:id/approve": { status: 200; params: { id: Uuid }; response: ReservationRequestApproval };
+  "POST /reservation-requests/:id/reject": {
+    status: 200;
+    params: { id: Uuid };
+    body: RejectReservationRequestBody;
     response: ReservationRequest;
   };
   "POST /reservations": { status: 201; body: CreateReservationBody; response: Reservation };

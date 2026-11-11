@@ -4,6 +4,7 @@ import { PrismaService } from '../database/prisma.service';
 import { MessagingTransactionService } from './messaging-transaction.service';
 import { messageSelect } from './messaging.select';
 import { AssistantBridge } from './assistant-bridge';
+import { OwnerReplyBridge } from './owner-reply-bridge';
 import type { Prisma } from '../../generated/prisma/client';
 
 export const MESSAGE_ATTEMPTS = 5;
@@ -44,6 +45,7 @@ export class MessageProcessorService {
     private readonly transactions: MessagingTransactionService,
     private readonly preparation: MessagePreparationService,
     @Optional() private readonly assistant?: AssistantBridge,
+    @Optional() private readonly ownerReplies?: OwnerReplyBridge,
   ) {}
 
   async process(messageId: string): Promise<'processed' | 'terminal' | 'busy'> {
@@ -116,8 +118,11 @@ export class MessageProcessorService {
             lastErrorCode: null,
           },
         });
-        // Scheduled in the same transaction: a restart cannot lose Samanta's reply.
-        await this.assistant?.handler?.inboundProcessed(tx, claimed);
+        // The owner's answers to approval requests (M9.2) are handled first and never
+        // reach Samanta. Scheduled in the same transaction: a restart cannot lose
+        // Samanta's reply.
+        if (!(await this.ownerReplies?.handler?.inboundProcessed(tx, claimed)))
+          await this.assistant?.handler?.inboundProcessed(tx, claimed);
         // TODO: MESSAGE_PROCESSED audit, committed with DB effects.
         return 'processed' as const;
       });

@@ -39,6 +39,7 @@ import {
   emailTestReader,
   registerEmailTests,
 } from './email.cases';
+import { registerOwnerApprovalTests } from './owner-approval.cases';
 
 interface BookingResponse {
   assignedUserId?: string | null;
@@ -572,6 +573,311 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
         })
       ).status,
     ).toBe('CANCELLED');
+  });
+
+  it('M8: conversación vinculada e historial de cambios de estado', async () => {
+    const admin = await prisma.user.findUniqueOrThrow({
+      where: { email: 'admin@test.example' },
+      select: { id: true },
+    });
+    const [owner, other] = await Promise.all(
+      ['+51900000801', '+51900000802'].map((phone) =>
+        prisma.customer.create({
+          data: {
+            firstName: 'M8',
+            phone,
+            normalizedPhone: phone,
+            sourceChannel: 'WHATSAPP',
+          },
+        }),
+      ),
+    );
+    const conversation = await prisma.conversation.create({
+      data: { customerId: owner.id, channel: 'WHATSAPP' },
+    });
+    const foreign = await prisma.conversation.create({
+      data: { customerId: other.id, channel: 'WHATSAPP' },
+    });
+    const rr = await createRequest({
+      customerId: owner.id,
+      sourceChannel: 'WHATSAPP',
+      conversationId: conversation.id,
+    });
+    expect(rr).toMatchObject({
+      conversationId: conversation.id,
+      status: 'INCOMPLETE_DATA',
+    });
+    await request(server)
+      .post('/reservation-requests')
+      .set('Authorization', auth())
+      .send({
+        customerId: owner.id,
+        sourceChannel: 'WHATSAPP',
+        conversationId: foreign.id,
+      })
+      .expect(400);
+    await request(server)
+      .patch(`/reservation-requests/${rr.id}`)
+      .set('Authorization', auth())
+      .send({ reservationAt: future(9), numberOfPeople: 2 })
+      .expect(200);
+    // Same status: no new row.
+    await request(server)
+      .patch(`/reservation-requests/${rr.id}`)
+      .set('Authorization', auth())
+      .send({ comments: 'Ventana' })
+      .expect(200);
+    // A retried cancel (two at once) records one change.
+    const cancels = await Promise.all(
+      [1, 2].map(() =>
+        request(server)
+          .patch(`/reservation-requests/${rr.id}/status`)
+          .set('Authorization', auth())
+          .send({ status: 'CANCELLED', reason: ' Cliente desistió ' }),
+      ),
+    );
+    expect(cancels.map((result) => result.status)).toEqual([200, 200]);
+    const detail = await request(server)
+      .get(`/reservation-requests/${rr.id}`)
+      .set('Authorization', auth(RoleCode.OWNER))
+      .expect(200);
+    const history = (
+      detail.body as {
+        statusHistory: {
+          previousStatus: string;
+          newStatus: string;
+          actorType: string;
+          actorId: string | null;
+          reason: string | null;
+          actor: { id: string; firstName: string } | null;
+        }[];
+      }
+    ).statusHistory;
+    expect(history).toEqual([
+      expect.objectContaining({
+        previousStatus: 'INCOMPLETE_DATA',
+        newStatus: 'READY_TO_SEND',
+        actorType: 'USER',
+        actorId: admin.id,
+        reason: null,
+        actor: expect.objectContaining({ id: admin.id }) as unknown,
+      }),
+      expect.objectContaining({
+        previousStatus: 'READY_TO_SEND',
+        newStatus: 'CANCELLED',
+        actorType: 'USER',
+        reason: 'Cliente desistió',
+      }),
+    ]);
+    const listed = await request(server)
+      .get('/reservation-requests')
+      .query({ conversationId: conversation.id })
+      .set('Authorization', auth())
+      .expect(200);
+    expect((listed.body as BookingPage).data.map((row) => row.id)).toEqual([
+      rr.id,
+    ]);
+    // The database itself refuses a non-change and an unidentified user.
+    for (const data of [
+      {
+        previousStatus: 'CANCELLED',
+        newStatus: 'CANCELLED',
+        actorType: 'SYSTEM',
+      },
+      {
+        previousStatus: 'READY_TO_SEND',
+        newStatus: 'CANCELLED',
+        actorType: 'USER',
+      },
+    ] as const)
+      await expect(
+        prisma.reservationRequestStatusHistory.create({
+          data: { reservationRequestId: rr.id, ...data },
+        }),
+      ).rejects.toThrow();
+  });
+
+  describe('aprobación manual de solicitudes (OWNER y ADMIN)', () => {
+    interface Approval {
+      request: BookingResponse;
+      reservation: BookingResponse & {
+        reservationRequestId: string;
+        customerId: string;
+      };
+    }
+    const ready = () =>
+      createRequest({
+        reservationAt: future(5),
+        numberOfPeople: 3,
+        commercialItemId: itemId,
+        specialRequirements: 'Silla para bebé',
+      });
+    const approve = (id: string, role: RoleCode = RoleCode.OWNER) =>
+      request(server)
+        .post(`/reservation-requests/${id}/approve`)
+        .set('Authorization', auth(role));
+    const reject = (
+      id: string,
+      body: object = {},
+      role: RoleCode = RoleCode.OWNER,
+    ) =>
+      request(server)
+        .post(`/reservation-requests/${id}/reject`)
+        .set('Authorization', auth(role))
+        .send(body);
+    const reservationsOf = (id: string) =>
+      prisma.reservation.findMany({ where: { reservationRequestId: id } });
+    const history = (id: string) =>
+      prisma.reservationRequestStatusHistory.findMany({
+        where: { reservationRequestId: id },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+
+    it('el dueño aprueba: ACCEPTED, historial USER y una reserva CONFIRMED en el calendario', async () => {
+      const rr = await ready();
+      const owner = await prisma.user.findUniqueOrThrow({
+        where: { email: 'owner@test.example' },
+        select: { id: true },
+      });
+      // Before approval, the request is not in the calendar.
+      expect(await reservationsOf(rr.id)).toHaveLength(0);
+      const result = await approve(rr.id).expect(200);
+      const body = result.body as Approval;
+      expect(body.request).toMatchObject({ id: rr.id, status: 'ACCEPTED' });
+      expect(body.reservation).toMatchObject({
+        reservationRequestId: rr.id,
+        customerId,
+        status: 'CONFIRMED',
+        numberOfPeople: 3,
+        reservationAt: rr.reservationAt,
+        notes: 'Silla para bebé',
+        commercialItem: expect.objectContaining({ id: itemId }) as unknown,
+      });
+      expect(body.reservation.code).toMatch(/^R-\d{4}-\d{6,}$/);
+      await request(server)
+        .get(`/reservations/${body.reservation.id}`)
+        .set('Authorization', auth(RoleCode.OPERATOR))
+        .expect(200);
+      expect(await history(rr.id)).toEqual([
+        expect.objectContaining({
+          previousStatus: 'READY_TO_SEND',
+          newStatus: 'ACCEPTED',
+          actorType: 'USER',
+          actorId: owner.id,
+        }),
+      ]);
+      const detail = await request(server)
+        .get(`/reservation-requests/${rr.id}`)
+        .set('Authorization', auth(RoleCode.OPERATOR))
+        .expect(200);
+      expect(
+        (detail.body as { reservation: { id: string; status: string } })
+          .reservation,
+      ).toMatchObject({ id: body.reservation.id, status: 'CONFIRMED' });
+    });
+
+    it('aprobar otra vez devuelve la misma reserva y no duplica nada', async () => {
+      const rr = await ready();
+      const first = (await approve(rr.id).expect(200)).body as Approval;
+      const again = (await approve(rr.id, RoleCode.ADMIN).expect(200))
+        .body as Approval;
+      expect(again.reservation.id).toBe(first.reservation.id);
+      expect(await reservationsOf(rr.id)).toHaveLength(1);
+      expect(await history(rr.id)).toHaveLength(1);
+    });
+
+    it('aprobaciones concurrentes crean una sola reserva', async () => {
+      const rr = await ready();
+      const results = await Promise.all([
+        approve(rr.id),
+        approve(rr.id, RoleCode.ADMIN),
+        approve(rr.id),
+      ]);
+      for (const result of results) expect([200, 409]).toContain(result.status);
+      const ok = results.filter((result) => result.status === 200);
+      expect(ok.length).toBeGreaterThan(0);
+      const reservations = await reservationsOf(rr.id);
+      expect(reservations).toHaveLength(1);
+      for (const result of ok)
+        expect((result.body as Approval).reservation.id).toBe(
+          reservations[0].id,
+        );
+      expect(
+        (await history(rr.id)).filter((row) => row.newStatus === 'ACCEPTED'),
+      ).toHaveLength(1);
+    });
+
+    it.each([RoleCode.OPERATOR, RoleCode.SUPPORT])(
+      '%s no puede aprobar ni rechazar',
+      async (role) => {
+        const rr = await ready();
+        await approve(rr.id, role).expect(403);
+        await reject(rr.id, {}, role).expect(403);
+        expect(
+          (
+            await prisma.reservationRequest.findUniqueOrThrow({
+              where: { id: rr.id },
+            })
+          ).status,
+        ).toBe('READY_TO_SEND');
+        expect(await reservationsOf(rr.id)).toHaveLength(0);
+      },
+    );
+
+    it('rechazar: REJECTED con motivo, sin reserva; repetir no cambia nada; ya no se puede aprobar', async () => {
+      const rr = await ready();
+      const result = await reject(rr.id, {
+        reason: '  No hay mesas ese día  ',
+      }).expect(200);
+      expect(result.body).toMatchObject({ id: rr.id, status: 'REJECTED' });
+      expect(await reservationsOf(rr.id)).toHaveLength(0);
+      await reject(rr.id, { reason: 'Otro motivo' }, RoleCode.ADMIN).expect(
+        200,
+      );
+      expect(await history(rr.id)).toEqual([
+        expect.objectContaining({
+          previousStatus: 'READY_TO_SEND',
+          newStatus: 'REJECTED',
+          reason: 'No hay mesas ese día',
+        }),
+      ]);
+      const blocked = await approve(rr.id).expect(409);
+      expect((blocked.body as { message: string }).message).toBe(
+        'La solicitud no se puede aprobar en su estado actual',
+      );
+      expect(await reservationsOf(rr.id)).toHaveLength(0);
+    });
+
+    it('una aprobada no se rechaza ni se cancela como solicitud', async () => {
+      const rr = await ready();
+      await approve(rr.id).expect(200);
+      const blocked = await reject(rr.id).expect(409);
+      expect((blocked.body as { message: string }).message).toBe(
+        'La solicitud ya fue aprobada: cancela su reserva desde el calendario',
+      );
+      await request(server)
+        .patch(`/reservation-requests/${rr.id}/status`)
+        .set('Authorization', auth())
+        .send({ status: 'CANCELLED' })
+        .expect(409);
+    });
+
+    it('una solicitud incompleta no se aprueba, pero sí se puede rechazar', async () => {
+      const rr = await createRequest();
+      const blocked = await approve(rr.id).expect(409);
+      expect((blocked.body as { message: string }).message).toBe(
+        'Completa la fecha y el número de personas antes de aprobar la solicitud',
+      );
+      await reject(rr.id).expect(200);
+    });
+
+    it('validación de la ruta y del body', async () => {
+      await approve('no-es-uuid').expect(400);
+      await approve(randomUUID()).expect(404);
+      const rr = await ready();
+      await reject(rr.id, { status: 'REJECTED' }).expect(400);
+      await reject(rr.id, { reason: 'x'.repeat(1001) }).expect(400);
+    });
   });
 
   it('filtros combinables y búsqueda de código, nombre y teléfono', async () => {
@@ -1656,4 +1962,10 @@ integration('Reservas: PostgreSQL aislado, JWT y módulos reales', () => {
     prisma: () => prisma,
   });
   registerEmailTests({ app: () => app, prisma: () => prisma });
+  registerOwnerApprovalTests({
+    app: () => app,
+    prisma: () => prisma,
+    server: () => server,
+    auth,
+  });
 });

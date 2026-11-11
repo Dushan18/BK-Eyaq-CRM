@@ -49,6 +49,38 @@ export function requireRequestEditable(status: ReservationRequestStatus) {
   }
 }
 
+// A person (OWNER or ADMIN) decides on a request. SENT_TO_OWNER and WAITING_RESPONSE
+// are reached with the owner's WhatsApp approval (M9); they are accepted here already
+// so that a person can still decide on a request waiting for the owner.
+const AWAITING_DECISION: ReservationRequestStatus[] = [
+  ReservationRequestStatus.READY_TO_SEND,
+  ReservationRequestStatus.SENT_TO_OWNER,
+  ReservationRequestStatus.WAITING_RESPONSE,
+];
+export function requireRequestApprovable(status: ReservationRequestStatus) {
+  if (status === ReservationRequestStatus.INCOMPLETE_DATA)
+    throw new ConflictException(
+      'Completa la fecha y el número de personas antes de aprobar la solicitud',
+    );
+  if (!AWAITING_DECISION.includes(status))
+    throw new ConflictException(
+      'La solicitud no se puede aprobar en su estado actual',
+    );
+}
+export function requireRequestRejectable(status: ReservationRequestStatus) {
+  if (status === ReservationRequestStatus.ACCEPTED)
+    throw new ConflictException(
+      'La solicitud ya fue aprobada: cancela su reserva desde el calendario',
+    );
+  if (
+    status !== ReservationRequestStatus.INCOMPLETE_DATA &&
+    !AWAITING_DECISION.includes(status)
+  )
+    throw new ConflictException(
+      'La solicitud no se puede rechazar en su estado actual',
+    );
+}
+
 export function requireReservationTransition(
   current: ReservationStatus,
   next: ReservationStatus,

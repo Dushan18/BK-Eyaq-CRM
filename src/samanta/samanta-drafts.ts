@@ -1,4 +1,26 @@
 import type { Prisma } from '../../generated/prisma/client';
+import type { DraftOutput } from './samanta.provider';
+import { replies } from './samanta-reservations';
+
+// Text for a reply whose content the model left empty (only allowed with a PROPOSE or
+// CONFIRM action): what reaches a draft, a person or the customer is never empty and
+// never says the reservation is confirmed. A sent summary or registration replaces it.
+export function replyText(output: DraftOutput) {
+  if (output.content.trim()) return output.content;
+  const text = replies[output.reservation?.language ?? 'es'];
+  return output.requiresHuman ? text.emptyHandOff : text.emptyReply;
+}
+
+// The model's answer as stored on a draft. `reservation` is an instruction for the
+// backend, not a column: what it did is stored by the reservation flow.
+export const draftFields = (output: DraftOutput) => ({
+  content: replyText(output),
+  intent: output.intent,
+  requiresHuman: output.requiresHuman,
+  missingFields: output.missingFields,
+  inputTokens: output.inputTokens,
+  outputTokens: output.outputTokens,
+});
 
 // Sequence of the newest message that changes what Samanta should answer: anything
 // sent to the customer, or a customer message other than an unsupported one

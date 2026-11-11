@@ -34,6 +34,10 @@ export interface InboundMessageCommand {
   content?: string;
   occurredAt?: string;
   attachments?: InboundAttachment[];
+  // WhatsApp: the message this one answers (context.id), and whether it is a button tap
+  // rather than typed text. Used to tie the owner's answers to a request (M9.2).
+  replyToExternalMessageId?: string;
+  buttonReply?: boolean;
 }
 // BSUID: country prefix plus up to 128 alphanumerics ("US.13491208655302741918").
 export const WHATSAPP_USER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
@@ -72,7 +76,11 @@ export function validateInboundMessage(input: unknown): InboundMessageCommand {
     'content',
     'occurredAt',
     'attachments',
+    'replyToExternalMessageId',
+    'buttonReply',
   ]);
+  if (data.buttonReply !== undefined && typeof data.buttonReply !== 'boolean')
+    invalid();
   if (
     !Object.values(ContactChannel).includes(data.channel as ContactChannel) ||
     !Object.values(MessageType).includes(data.type as MessageType)
@@ -210,5 +218,7 @@ export function validateInboundMessage(input: unknown): InboundMessageCommand {
     content,
     occurredAt,
     attachments,
+    replyToExternalMessageId: text(data.replyToExternalMessageId, 255),
+    buttonReply: data.buttonReply === true ? true : undefined,
   };
 }

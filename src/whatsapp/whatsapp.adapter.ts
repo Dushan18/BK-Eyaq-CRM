@@ -218,6 +218,15 @@ export class WhatsAppAdapter
                         : {}),
                     },
                     occurredAt: timestamp(message.timestamp).toISOString(),
+                    // The message this one quotes or answers with a button (our wamid).
+                    ...(optionalText(record(message.context)?.id, 255)
+                      ? {
+                          replyToExternalMessageId: optionalText(
+                            record(message.context)?.id,
+                            255,
+                          ),
+                        }
+                      : {}),
                   };
                   let command: InboundMessageCommand;
                   const reply = chosenReply(message);
@@ -229,7 +238,12 @@ export class WhatsAppAdapter
                     };
                   } else if (reply !== undefined) {
                     // A button tap is what the customer "said": Samanta answers it.
-                    command = { ...base, type: 'TEXT', content: reply };
+                    command = {
+                      ...base,
+                      type: 'TEXT',
+                      content: reply,
+                      buttonReply: true,
+                    };
                   } else if (
                     message.type === 'image' ||
                     message.type === 'document'

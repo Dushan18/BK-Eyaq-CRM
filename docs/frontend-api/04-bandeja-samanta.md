@@ -994,7 +994,7 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
   "mode": "MANUAL",
   "revision": 1,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-v3",
+  "promptVersion": "samanta-v4",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
   "content": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
@@ -1010,6 +1010,9 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": null,
   "outboundMessageId": null,
+  "reservationProposal": null,
+  "reservationRequestId": null,
+  "reservationOutcome": null,
   "createdAt": "2026-11-03T02:32:50.058Z",
   "updatedAt": "2026-11-03T02:32:54.733Z"
 }
@@ -1058,11 +1061,12 @@ Idempotency-Key: 9c2f7e4a-1b3d-4f6a-8e0c-2d4b6f8a0c1e
     - el canal (`sourceChannel`), la fecha y la hora locales con el día de la semana, y las personas;
     - solo en las de la web (`WEBSITE`), `formNotes`: lo que escribió el cliente en el formulario (`specialRequirements` y `comments`), sin las líneas que empiezan con `CRM: ` y con los enlaces, correos y teléfonos cambiados por `[enlace]`, `[correo]` y `[número]`, hasta 300 caracteres;
   - sus próximas reservas confirmadas (`customer.upcomingReservations`, desde el 9/11): hasta 3, las más cercanas, en `CONFIRMED`, `UPCOMING` o `RESCHEDULED` y con fecha futura, cada una con su código, su fecha y hora locales y las personas;
+  - el resumen de reserva que espera confirmación (`customer.awaitingConfirmation`, desde el 10/11; [Samanta automática › Solicitudes que registra Samanta](#solicitudes-que-registra-samanta)), o `null`;
   - el canal con su largo máximo de respuesta: 4096 caracteres en WhatsApp, 2000 en Messenger y 800 en Instagram, que deja margen para su tope en bytes;
   - los últimos 20 mensajes de la conversación (entrantes y salientes ya enviados), cada uno con su hora local.
 
-  No envía el teléfono ni el correo del cliente, ni las notas internas (las del cliente, las de las reservas y las líneas `CRM: ` de las solicitudes), ni otras conversaciones. Con el prompt `samanta-v3`, Samanta no vuelve a pedir los datos de una solicitud que el cliente ya hizo: la menciona por su código y pregunta solo lo que falta o lo que quiere cambiar.
-- No envía nada al cliente ni crea solicitudes ni reservas.
+  No envía el teléfono ni el correo del cliente, ni las notas internas (las del cliente, las de las reservas y las líneas `CRM: ` de las solicitudes), ni otras conversaciones. Desde el prompt `samanta-v3`, Samanta no vuelve a pedir los datos de una solicitud que el cliente ya hizo: la menciona por su código y pregunta solo lo que falta o lo que quiere cambiar. Desde `samanta-v4` (10/11), la IA devuelve además una acción de reserva; en los borradores manuales es siempre «ninguna» y no se guarda.
+- No envía nada al cliente ni crea solicitudes ni reservas. Un borrador manual nunca registra una solicitud, aunque el cliente confirme: eso solo lo hace [Samanta automática](#solicitudes-que-registra-samanta). En los manuales, `reservationProposal`, `reservationRequestId` y `reservationOutcome` siempre son `null`.
 - Con la misma clave y los mismos datos no vuelve a llamar a la IA: devuelve el borrador que ya existe, con el estado recalculado.
 
 **Notas para el frontend**
@@ -1139,7 +1143,7 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "mode": "MANUAL",
       "revision": 2,
       "model": "gpt-6-luna",
-      "promptVersion": "samanta-v3",
+      "promptVersion": "samanta-v4",
       "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
       "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
       "content": "¡Hola, Lucía! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? En breve te confirmamos la disponibilidad.",
@@ -1155,6 +1159,9 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "expiresAt": "2026-11-03T02:47:50.051Z",
       "reviewedAt": "2026-11-03T02:34:02.415Z",
       "outboundMessageId": "e2a4c6e8-0b1d-4f3a-8c5e-7a9b1d3f5c7e",
+      "reservationProposal": null,
+      "reservationRequestId": null,
+      "reservationOutcome": null,
       "createdAt": "2026-11-03T02:32:50.058Z",
       "updatedAt": "2026-11-03T02:34:02.418Z"
     },
@@ -1171,7 +1178,7 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "mode": "MANUAL",
       "revision": 1,
       "model": "gpt-6-luna",
-      "promptVersion": "samanta-v3",
+      "promptVersion": "samanta-v4",
       "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
       "originalContent": null,
       "content": null,
@@ -1187,6 +1194,9 @@ No tiene query ni paginación: si envías parámetros, se ignoran.
       "expiresAt": "2026-11-02T23:56:07.512Z",
       "reviewedAt": null,
       "outboundMessageId": null,
+      "reservationProposal": null,
+      "reservationRequestId": null,
+      "reservationOutcome": null,
       "createdAt": "2026-11-02T23:41:07.519Z",
       "updatedAt": "2026-11-02T23:41:27.840Z"
     }
@@ -1252,7 +1262,7 @@ No tiene query: si envías parámetros, se ignoran.
   "mode": "MANUAL",
   "revision": 1,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-v3",
+  "promptVersion": "samanta-v4",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": null,
   "content": null,
@@ -1268,6 +1278,9 @@ No tiene query: si envías parámetros, se ignoran.
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": null,
   "outboundMessageId": null,
+  "reservationProposal": null,
+  "reservationRequestId": null,
+  "reservationOutcome": null,
   "createdAt": "2026-11-03T02:32:50.058Z",
   "updatedAt": "2026-11-03T02:32:50.058Z"
 }
@@ -1352,7 +1365,7 @@ Content-Type: application/json
   "mode": "MANUAL",
   "revision": 2,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-v3",
+  "promptVersion": "samanta-v4",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
   "content": "¡Hola, Lucía! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? En breve te confirmamos la disponibilidad.",
@@ -1368,6 +1381,9 @@ Content-Type: application/json
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": null,
   "outboundMessageId": null,
+  "reservationProposal": null,
+  "reservationRequestId": null,
+  "reservationOutcome": null,
   "createdAt": "2026-11-03T02:32:50.058Z",
   "updatedAt": "2026-11-03T02:33:41.270Z"
 }
@@ -1463,7 +1479,7 @@ Content-Type: application/json
   "mode": "MANUAL",
   "revision": 2,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-v3",
+  "promptVersion": "samanta-v4",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? Un miembro del equipo confirmará la disponibilidad.",
   "content": "¡Hola, Lucía! Con gusto te ayudamos con tu solicitud para 4 personas este sábado a las 8 p. m. ¿A nombre de quién la registramos? En breve te confirmamos la disponibilidad.",
@@ -1479,6 +1495,9 @@ Content-Type: application/json
   "expiresAt": "2026-11-03T02:47:50.051Z",
   "reviewedAt": "2026-11-03T02:34:02.415Z",
   "outboundMessageId": "e2a4c6e8-0b1d-4f3a-8c5e-7a9b1d3f5c7e",
+  "reservationProposal": null,
+  "reservationRequestId": null,
+  "reservationOutcome": null,
   "createdAt": "2026-11-03T02:32:50.058Z",
   "updatedAt": "2026-11-03T02:34:02.418Z"
 }
@@ -1578,7 +1597,7 @@ Content-Type: application/json
   "mode": "MANUAL",
   "revision": 1,
   "model": "gpt-6-luna",
-  "promptVersion": "samanta-v3",
+  "promptVersion": "samanta-v4",
   "knowledgeHash": "3f9a1c7e5b2d4f6081a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7",
   "originalContent": "¡Hola! Gracias por escribirnos. ¿Para qué fecha y cuántas personas deseas la reserva?",
   "content": "¡Hola! Gracias por escribirnos. ¿Para qué fecha y cuántas personas deseas la reserva?",
@@ -1594,6 +1613,9 @@ Content-Type: application/json
   "expiresAt": "2026-11-03T03:20:11.330Z",
   "reviewedAt": "2026-11-03T03:06:02.904Z",
   "outboundMessageId": null,
+  "reservationProposal": null,
+  "reservationRequestId": null,
+  "reservationOutcome": null,
   "createdAt": "2026-11-03T03:05:11.337Z",
   "updatedAt": "2026-11-03T03:06:02.907Z"
 }
@@ -1644,12 +1666,15 @@ No hay rutas nuevas. Con `SAMANTA_AUTO_ENABLED=true` en el servidor, Samanta res
 
 | Situación | Qué pasa | `assistantPauseReason` |
 |---|---|---|
-| El cliente pide una persona, reclama, cancela o cambia una reserva, menciona alergias, o confirma los datos de una reserva | Samanta envía su respuesta (p. ej. «Te comunico con una persona del equipo») y pausa la conversación | `SAMANTA_HANDOFF` |
+| El cliente pide una persona, reclama, cancela o cambia una reserva existente, menciona alergias o temas de salud, pide un evento privado o pagos | Samanta envía su respuesta (p. ej. «Te comunico con una persona del equipo») y pausa la conversación | `SAMANTA_HANDOFF` |
+| El cliente dice «sí» a una reserva sin un resumen previo de Samanta que confirmar (`reservationOutcome: "NO_PROPOSAL"`) | Samanta envía «Una persona del equipo revisará tu solicitud y continuará la atención en breve.» y pausa | `SAMANTA_HANDOFF` |
 | Falla la IA, el envío se rechaza o se supera un límite | Pausa sin enviar nada. El borrador queda `FAILED` con su `errorCode` | `SAMANTA_HANDOFF` |
 | Un operador envía un mensaje a mano | Pausa; la respuesta automática pendiente se descarta (`STALE`) | `OPERATOR_REPLIED` |
 | Alguien pausa con `PATCH :id/assistant` | Pausa | `MANUAL` |
 
 Una conversación pausada no se reanuda sola. Al reanudarla (`{ "paused": false }`), Samanta responde desde el siguiente mensaje del cliente; los que llegaron durante la pausa los atiende la persona.
+
+Desde el 10/11, que el cliente confirme los datos de una reserva **ya no** pausa la conversación: Samanta registra la solicitud y sigue atendiendo (ver abajo).
 
 **`errorCode` de las respuestas automáticas**
 
@@ -1676,7 +1701,61 @@ Una conversación pausada no se reanuda sola. Al reanudarla (`{ "paused": false 
   - El motivo concreto está en el último borrador `AUTO` (`intent`, `requiresHuman`, `errorCode`).
   - El `conversationMode` actual sigue sirviendo: sin pausa es «Samanta».
 - **Actualización:** no hay eventos. El polling que ya existe trae la pausa (lista y detalle de conversaciones), los mensajes de Samanta (historial) y los borradores (`qk.assistantDrafts(id)`).
-- **Reservas:** Samanta recoge fecha, hora, personas y nombre, y transfiere. No confirma ni crea solicitudes ni reservas. Desde el 9/11 conoce las solicitudes abiertas y las próximas reservas del cliente ([Generar › Efectos](#generar-un-borrador-con-samanta)): si el cliente ya pidió la reserva en la web, la menciona por su código y no vuelve a pedirle los datos.
+- **Reservas:** desde el 10/11, Samanta recoge fecha, hora y personas, envía un resumen y, si el cliente lo confirma, registra la solicitud ([Solicitudes que registra Samanta](#solicitudes-que-registra-samanta)). No confirma ni crea reservas. En el panel, muestra `reservationOutcome` del borrador («Resumen enviado», «Solicitud registrada»…) y, con `CREATED`, enlaza la solicitud de la conversación (`GET /reservation-requests?conversationId=…`). Tras un `CREATED`, invalida `qk.requestsAll`. Desde el 9/11 conoce las solicitudes abiertas y las próximas reservas del cliente ([Generar › Efectos](#generar-un-borrador-con-samanta)): si el cliente ya pidió la reserva en la web, la menciona por su código y no vuelve a pedirle los datos.
+
+### Solicitudes que registra Samanta
+
+Desde el 10/11 (M8.2), solo con envío activo (`SAMANTA_AUTO_SEND=true`). En dos pasos, y en ambos el texto que recibe el cliente lo escribe el backend, no la IA:
+
+1. **Resumen.** Cuando el cliente quiere reservar y ya dio fecha, hora y número de personas, la IA propone los datos (y el servicio y los requerimientos, si los mencionó). El backend los valida:
+   - fecha y hora reales en la zona del restaurante (`America/Lima`) y estrictamente futuras;
+   - personas: un entero de 1 en adelante;
+   - el servicio, si lo hay: un elemento activo y aprobado, de una categoría activa, buscado por su nombre en español o inglés sin distinguir mayúsculas;
+   - que el cliente no tenga ya una solicitud abierta para ese mismo momento.
+
+   Si todo es válido, envía este resumen y lo guarda en el borrador (`reservationProposal`, `reservationOutcome: "PROPOSED"`). **No crea nada.**
+
+   ```text
+   Estos son los datos de tu solicitud de reserva:
+   • Fecha: viernes 20/11/2026
+   • Hora: 19:30
+   • Personas: 4
+   • Servicio: Menú degustación
+   • Requerimientos: Mesa junto a la ventana
+   ¿Registro la solicitud con estos datos? Responde «sí» para confirmarlos o dime qué quieres cambiar. Después el restaurante revisará la solicitud.
+   ```
+
+   Si algo no es válido, en lugar del resumen envía una pregunta fija y sigue conversando, sin pausar. `reservationOutcome` dice cuál fue: `MISSING_DATA`, `INVALID_DATE`, `PAST_DATE`, `INVALID_PEOPLE`, `UNKNOWN_SERVICE` o `ALREADY_REGISTERED`.
+2. **Confirmación.** Si el cliente acepta el resumen de forma explícita y sin cambios, el backend comprueba que el último mensaje que se le envió antes de su respuesta sea ese resumen, que el canal lo haya aceptado (`SENT`, `DELIVERED` o `READ`), que tenga menos de 24 h y que no se haya usado. Si se cumple, vuelve a validar los datos guardados y, en la misma transacción que la respuesta:
+   - crea la solicitud con los datos **del resumen guardado** (nunca con lo que escriba la IA en ese turno): el cliente de la conversación, `conversationId` de la conversación, `sourceChannel` = canal de la conversación, `status: "READY_TO_SEND"` y en `comments` la nota `CRM: registrada por Samanta con la confirmación del cliente en la conversación.`;
+   - pasa al cliente a `REQUESTED_RESERVATION` si estaba en `NEW`, `INTERESTED` o `IN_CONVERSATION` (la misma regla que las solicitudes de la web);
+   - deja en el borrador del resumen `reservationRequestId` y en el de la respuesta `reservationOutcome: "CREATED"`;
+   - responde, sin pausar: «Listo, registré tu solicitud de reserva RES-2026-000043 para el viernes 20/11/2026 a las 19:30 (4 personas). Está pendiente de aprobación del restaurante: te avisaremos por aquí cuando la revisen.»
+
+   No crea ninguna reserva en el calendario ni avisa al dueño (eso es M9). La solicitud aparece en `GET /reservation-requests` y en `GET /reservation-requests?conversationId=…`.
+
+| Caso | Qué pasa | `reservationOutcome` |
+|---|---|---|
+| «Sí» o un mensaje repetido después del registro | Responde que la solicitud `RES-…` ya está registrada. No crea otra | `ALREADY_REGISTERED` |
+| «Sí» después de que el propietario decidió (M9.3) | Repite la decisión: aprobada (con el código de la reserva), no aprobada, o cambio propuesto. En este último caso, además pasa la conversación a una persona. Nunca vuelve a decir «pendiente de aprobación». No crea otra | `ALREADY_DECIDED` |
+| Dos confirmaciones procesadas a la vez | Se crea una sola solicitud: el resumen solo puede producir una | `CREATED` en una |
+| La fecha del resumen pasó o el servicio se retiró antes de confirmar | Pregunta otra vez, sin crear nada | `PAST_DATE` · `UNKNOWN_SERVICE` |
+| El resumen tiene más de 24 h | Vuelve a enviar el resumen en lugar de darlo por confirmado | `PROPOSED` |
+| «Sí» sin resumen previo, o el resumen no se entregó | No crea nada. Pasa a una persona | `NO_PROPOSAL` |
+| La IA marca un caso para una persona (p. ej. «sí, pero soy alérgico al maní») | Gana la transferencia. No crea nada | `null` |
+| Modo sombra (`SAMANTA_AUTO_SEND=false`) | La respuesta queda `READY` con el texto de la IA. No se valida ni se registra nada | `null` |
+
+Los textos fijos existen en español y en inglés, según el idioma de la conversación que detecta la IA. Ninguno dice que la reserva está confirmada.
+
+**Texto vacío de la IA.** Con un resumen o una confirmación, la IA a veces no escribe texto, porque sabe que el backend lo reemplaza. En ese caso se acepta, `originalContent` queda en `""` y lo que se envía o se muestra nunca va vacío:
+
+| Caso | `content` |
+|---|---|
+| Resumen o confirmación procesados | El texto fijo de la tabla de arriba |
+| La IA pide una persona (`requiresHuman`) | «Gracias por escribirnos. Una persona del equipo continuará la atención en breve.» |
+| Modo sombra o borrador manual | «Gracias. Estoy revisando los datos de tu solicitud de reserva y te escribo en breve.» |
+
+Sin una acción de resumen o confirmación, un texto vacío sigue siendo `AI_INVALID_RESPONSE`.
 
 ## Webhooks de Meta (no usar desde el frontend)
 `GET /webhooks/whatsapp` · `POST /webhooks/whatsapp` · `GET /webhooks/messenger` · `POST /webhooks/messenger` · `GET /webhooks/instagram` · `POST /webhooks/instagram`
@@ -2088,9 +2167,9 @@ Respuesta de todas las rutas de borradores: la fila completa del borrador.
 | `mode` | `SamantaDraftMode` | No | `MANUAL`: lo pidió una persona con [Generar](#generar-un-borrador-con-samanta). `AUTO`: lo creó Samanta al llegar un mensaje ([Samanta automática](#samanta-automática)). |
 | `revision` | number | No | Empieza en 1 y suma 1 con cada edición. |
 | `model` | string | No | Modelo de IA (`SAMANTA_MODEL`; por defecto, `gpt-6-luna`). |
-| `promptVersion` | string | No | Versión del prompt: `samanta-v3` desde el 9/11 (con las solicitudes y las reservas del cliente en el contexto). Los borradores anteriores traen `samanta-v2` (8/11) o `samanta-drafts-v1`. |
+| `promptVersion` | string | No | Versión del prompt: `samanta-v4` desde el 10/11 (acción de reserva y resumen que espera confirmación). Los anteriores traen `samanta-v3` (9/11, solicitudes y reservas del cliente en el contexto), `samanta-v2` (8/11) o `samanta-drafts-v1`. |
 | `knowledgeHash` | string | No | SHA-256 (hex) de la configuración y el catálogo usados. Si cambian, el borrador queda `STALE` al editar o aprobar. `""` mientras un automático espera en `SCHEDULED`. |
-| `originalContent` | string | Sí | Texto que dio la IA. `null` mientras está `GENERATING`, si falló, o si quedó `STALE` durante la generación por un mensaje nuevo, una pausa o el vencimiento. |
+| `originalContent` | string | Sí | Texto que dio la IA. `null` mientras está `GENERATING`, si falló, o si quedó `STALE` durante la generación por un mensaje nuevo, una pausa o el vencimiento. Desde el 10/11 puede ser `""` en una respuesta con resumen o confirmación: entonces `content` trae el texto fijo o uno de respaldo ([Solicitudes que registra Samanta](#solicitudes-que-registra-samanta)). |
 | `content` | string | Sí | Texto actual (el editado, si se editó). Mismos casos de `null`. Nunca es `null` en `READY` ni en `APPROVED`. |
 | `intent` | `SamantaIntent` | Sí | Intención detectada. Se guarda junto con el texto de la IA: es `null` en los mismos casos que `originalContent`, aunque la IA haya respondido. |
 | `requiresHuman` | boolean | No | `true` por defecto. Toma el valor de la IA solo cuando se guarda su texto; si no, se queda en `true`. No se recalcula al editar. |
@@ -2104,6 +2183,9 @@ Respuesta de todas las rutas de borradores: la fila completa del borrador.
 | `expiresAt` | `IsoDateTime` | No | Creación + 15 min. Después, un `READY` pasa a `STALE`. |
 | `reviewedAt` | `IsoDateTime` | Sí | Momento de la aprobación o el rechazo. |
 | `outboundMessageId` | `Uuid` | Sí | Mensaje creado al aprobar. Siempre presente en `APPROVED`, y solo en ese estado. |
+| `reservationProposal` | `SamantaReservationProposal` | Sí | Desde el 10/11, solo en automáticos con `reservationOutcome: "PROPOSED"`: los datos validados del resumen enviado (`date` `AAAA-MM-DD` y `time` `HH:MM` locales, `people`, `commercialItemId`, `service`, `specialRequirements`, `language`). `null` en los demás. |
+| `reservationRequestId` | `Uuid` | Sí | Desde el 10/11, en el borrador del resumen: la solicitud que se creó cuando el cliente lo confirmó. Única: un resumen produce como mucho una solicitud. |
+| `reservationOutcome` | `SamantaReservationOutcome` | Sí | Desde el 10/11, solo en automáticos: qué hizo la acción de reserva de esa respuesta (`PROPOSED`, `CREATED`, `ALREADY_REGISTERED`, `ALREADY_DECIDED` (M9.3), `MISSING_DATA`, `INVALID_DATE`, `PAST_DATE`, `INVALID_PEOPLE`, `UNKNOWN_SERVICE`, `NO_PROPOSAL`). Con un valor, `content` es el texto fijo del backend y `originalContent` el de la IA. `null` si no hubo acción. |
 | `createdAt` | `IsoDateTime` | No | Creación. |
 | `updatedAt` | `IsoDateTime` | No | Último cambio. |
 
@@ -2675,6 +2757,33 @@ export interface EditSamantaDraftRequest extends ReviewSamantaDraftRequest {
 }
 
 /** Borrador de Samanta: fila completa que devuelven todas sus rutas. */
+export const SAMANTA_RESERVATION_OUTCOMES = [
+  "PROPOSED",
+  "CREATED",
+  "ALREADY_REGISTERED",
+  "ALREADY_DECIDED",
+  "MISSING_DATA",
+  "INVALID_DATE",
+  "PAST_DATE",
+  "INVALID_PEOPLE",
+  "UNKNOWN_SERVICE",
+  "NO_PROPOSAL",
+] as const;
+/** Qué hizo la acción de reserva de una respuesta automática (10/11). */
+export type SamantaReservationOutcome = (typeof SAMANTA_RESERVATION_OUTCOMES)[number];
+
+/** Datos validados del resumen que Samanta envió para que el cliente confirme (10/11). */
+export interface SamantaReservationProposal {
+  /** Fecha local del restaurante, AAAA-MM-DD. */
+  date: string;
+  /** Hora local, HH:MM (24 h). */
+  time: string;
+  people: number;
+  commercialItemId: Uuid | null;
+  service: string | null;
+  specialRequirements: string | null;
+  language: "es" | "en";
+}
 export interface SamantaDraft {
   id: Uuid;
   conversationId: Uuid;
@@ -2699,7 +2808,7 @@ export interface SamantaDraft {
   revision: number;
   /** Modelo de IA (SAMANTA_MODEL). */
   model: string;
-  /** Versión del prompt: "samanta-v3" desde el 9/11; antes, "samanta-v2" (8/11) o "samanta-drafts-v1". */
+  /** Versión del prompt: "samanta-v4" desde el 10/11; antes, "samanta-v3" (9/11), "samanta-v2" (8/11) o "samanta-drafts-v1". */
   promptVersion: string;
   /** SHA-256 (hex) de la información comercial usada. */
   knowledgeHash: string;
@@ -2731,6 +2840,12 @@ export interface SamantaDraft {
   reviewedAt: IsoDateTime | null;
   /** Mensaje OUTBOUND creado al aprobar. */
   outboundMessageId: Uuid | null;
+  /** Solo en automáticos con reservationOutcome PROPOSED: el resumen enviado (10/11). */
+  reservationProposal: SamantaReservationProposal | null;
+  /** En el borrador del resumen: la solicitud creada al confirmarlo (como mucho una). */
+  reservationRequestId: Uuid | null;
+  /** Solo en automáticos con acción de reserva; entonces content es el texto fijo del backend. */
+  reservationOutcome: SamantaReservationOutcome | null;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
 }

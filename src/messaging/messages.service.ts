@@ -178,6 +178,8 @@ export class MessagesService {
           content: command.content,
           receivedAt,
           occurredAt: command.occurredAt ? new Date(command.occurredAt) : null,
+          replyToExternalMessageId: command.replyToExternalMessageId ?? null,
+          isButtonReply: command.buttonReply === true,
           attachments: { create: command.attachments },
           outbox: { create: {} },
         },

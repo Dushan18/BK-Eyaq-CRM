@@ -24,6 +24,7 @@ import {
   type ChannelTransport,
 } from './channel-transport';
 import { AssistantBridge } from './assistant-bridge';
+import { OwnerReplyBridge } from './owner-reply-bridge';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { AssistantBridge } from './assistant-bridge';
     },
     ChannelTransports,
     AssistantBridge,
+    OwnerReplyBridge,
   ],
   exports: [
     MessagesService,
@@ -58,6 +60,7 @@ import { AssistantBridge } from './assistant-bridge';
     MessagingTransactionService,
     OutboundMessagesService,
     AssistantBridge,
+    OwnerReplyBridge,
   ],
 })
 export class MessagingModule {}

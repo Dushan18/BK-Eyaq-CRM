@@ -29,6 +29,11 @@ class ReservationRequestFieldsDto {
   @IsUUID()
   commercialItemId?: string | null;
 
+  // A conversation of the request's customer; null unlinks it.
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string | null;
+
   @IsOptional()
   @ReservationDate()
   reservationAt?: string | null;
@@ -76,6 +81,24 @@ export class UpdateReservationRequestDto extends ReservationRequestFieldsDto {
 export class UpdateReservationRequestStatusDto {
   @IsIn([ReservationRequestStatus.CANCELLED])
   status!: typeof ReservationRequestStatus.CANCELLED;
+
+  // Kept in the status history.
+  @IsOptional()
+  @Transform(trimReservationText)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  reason?: string | null;
+}
+
+// POST /reservation-requests/:id/reject. The reason stays in the status history.
+export class RejectReservationRequestDto {
+  @IsOptional()
+  @Transform(trimReservationText)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  reason?: string | null;
 }
 
 export class ReservationRequestQueryDto extends ReservationBaseQueryDto {
@@ -90,6 +113,10 @@ export class ReservationRequestQueryDto extends ReservationBaseQueryDto {
   @ValidateIf(provided)
   @IsUUID()
   commercialItemId?: string;
+
+  @ValidateIf(provided)
+  @IsUUID()
+  conversationId?: string;
 
   @Transform(trimReservationText)
   @ValidateIf(provided)

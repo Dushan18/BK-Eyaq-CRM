@@ -66,9 +66,17 @@ model SamantaDraft {
   expiresAt           DateTime @db.Timestamptz(3)
   reviewedAt          DateTime? @db.Timestamptz(3)
   outboundMessageId   String? @unique
+  // Automatic mode, M8.2. A reply that summarised a reservation and asked the customer to
+  // confirm it keeps the validated data here; the request created when the customer
+  // confirms points back to this draft through reservationRequestId (at most once).
+  reservationProposal  Json?
+  reservationRequestId String? @unique
+  // What the reservation action of this reply did (PROPOSED, CREATED, PAST_DATE...).
+  reservationOutcome   String? @db.VarChar(40)
   createdAt           DateTime @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime @updatedAt @db.Timestamptz(3)
   conversation        Conversation @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  reservationRequest  ReservationRequest? @relation(fields: [reservationRequestId], references: [id], onDelete: Restrict)
   sourceMessage       Message @relation("DraftSource", fields: [sourceMessageId], references: [id], onDelete: Restrict)
   outboundMessage     Message? @relation("DraftOutbound", fields: [outboundMessageId], references: [id], onDelete: Restrict)
   createdBy           User @relation("DraftCreator", fields: [createdById], references: [id], onDelete: Restrict)
@@ -134,6 +142,7 @@ model Conversation {
   customer               Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
   assignedUser           User?          @relation("ConversationAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
   messages               Message[]
+  reservationRequests    ReservationRequest[]
 
   @@unique([customerId, channel])
   // Necesario como destino de FK compuesta para impedir Message.channel distinto.
@@ -148,11 +157,18 @@ model Message {
   recipientExternalId String?             @db.VarChar(160)
   sourcedDrafts      SamantaDraft[] @relation("DraftSource")
   approvedDraft      SamantaDraft?  @relation("DraftOutbound")
+  ownerApprovalFor   ReservationRequest? @relation("OwnerApprovalMessage")
+  decisionNoticeFor  ReservationRequest? @relation("CustomerDecisionNotice")
   id                 String              @id @default(uuid())
   conversationId     String
   channel            ContactChannel
   sequence           Int
   externalMessageId  String?             @db.VarChar(255)
+  // M9.2, inbound WhatsApp: the message it answers (context.id) and whether it was a
+  // button tap. For the owner's answers, what the backend did with it (ACCEPTED, ...).
+  replyToExternalMessageId String?       @db.VarChar(255)
+  isButtonReply      Boolean             @default(false)
+  ownerReplyOutcome  String?             @db.VarChar(40)
   direction          MessageDirection
   status             MessageStatus
   type               MessageType
@@ -365,6 +381,7 @@ model User {
   assignedReservations   Reservation[]                  @relation("ReservationAssignee")
   reservationNotes       ReservationNote[]              @relation("ReservationNoteAuthor")
   reservationReschedules ReservationRescheduleHistory[] @relation("ReservationRescheduleAuthor")
+  requestStatusChanges   ReservationRequestStatusHistory[] @relation("ReservationRequestStatusActor")
   id                     String                         @id @default(uuid())
   firstName              String
   lastName               String
@@ -452,6 +469,9 @@ model RestaurantConfig {
   latitude               Decimal?              @db.Decimal(10, 7)
   longitude              Decimal?              @db.Decimal(10, 7)
   whatsappNumber         String                @db.VarChar(16)
+  // M9.1: the owner's personal WhatsApp (E.164), where requests are sent for approval.
+  // The decisions are recorded as approvalResponsible (a user with the OWNER role).
+  ownerWhatsappNumber    String?               @db.VarChar(16)
   email                  String                @db.VarChar(320)
   website                String?               @db.VarChar(2048)
   currency               CurrencyCode          @default(PEN)
@@ -739,6 +759,15 @@ enum ReservationRequestStatus {
   CANCELLED
 }
 
+// Who changed a request's status: a CRM user, Samanta, the owner answering the approval
+// request, or the system on its own (e.g. a timeout). USER, SAMANTA and OWNER carry actorId.
+enum ReservationRequestActorType {
+  USER
+  SAMANTA
+  OWNER
+  SYSTEM
+}
+
 enum ReservationStatus {
   CONFIRMED
   UPCOMING
@@ -756,6 +785,9 @@ model ReservationRequest {
   externalReference   String?                  @unique @db.VarChar(40)
   customerId          String
   commercialItemId    String?
+  // The conversation the request came from or is negotiated in; it belongs to the same
+  // customer. Null when there is none (e.g. imported from the website's email).
+  conversationId      String?
   sourceChannel       ContactChannel
   reservationAt       DateTime?                @db.Timestamptz(3)
   numberOfPeople      Int?
@@ -764,20 +796,53 @@ model ReservationRequest {
   comments            String?                  @db.Text
   specialRequirements String?                  @db.Text
   status              ReservationRequestStatus @default(INCOMPLETE_DATA)
+  // M9.1: the WhatsApp template that asked the owner to approve it. Set once, when the
+  // request goes to SENT_TO_OWNER; it is never sent a second time by the system.
+  ownerMessageId      String?                  @unique
+  // M9.3: the message that told the customer the owner's decision, or why none could
+  // be sent (customerNoticeError). At most one: the owner decides a request once.
+  customerNoticeMessageId String?              @unique
+  customerNoticeError String?                  @db.VarChar(80)
   createdAt           DateTime                 @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime                 @updatedAt @db.Timestamptz(3)
   customer            Customer                 @relation(fields: [customerId], references: [id], onDelete: Restrict)
   commercialItem      CommercialItem?          @relation(fields: [commercialItemId], references: [id], onDelete: Restrict)
+  conversation        Conversation?            @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  ownerMessage        Message?                 @relation("OwnerApprovalMessage", fields: [ownerMessageId], references: [id], onDelete: Restrict)
+  customerNoticeMessage Message?               @relation("CustomerDecisionNotice", fields: [customerNoticeMessageId], references: [id], onDelete: Restrict)
   reservation         Reservation?
   inboundEmails       InboundEmail[]
+  statusHistory       ReservationRequestStatusHistory[]
+  samantaProposal     SamantaDraft?
 
   @@index([createdAt, id])
   @@index([status, createdAt])
   @@index([customerId])
   @@index([commercialItemId])
+  @@index([conversationId])
   @@index([sourceChannel])
   @@index([reservationAt])
   @@map("reservation_requests")
+}
+
+// One row per status change: never for the status a request is created with, nor for an
+// update that leaves it unchanged. The migration adds CHECKs: previousStatus <> newStatus,
+// and an actorId for USER, SAMANTA and OWNER.
+model ReservationRequestStatusHistory {
+  id                   String                      @id @default(uuid())
+  reservationRequestId String
+  previousStatus       ReservationRequestStatus
+  newStatus            ReservationRequestStatus
+  actorType            ReservationRequestActorType
+  actorId              String?
+  reason               String?                     @db.VarChar(1000)
+  createdAt            DateTime                    @default(now()) @db.Timestamptz(3)
+  reservationRequest   ReservationRequest          @relation(fields: [reservationRequestId], references: [id], onDelete: Restrict)
+  actor                User?                       @relation("ReservationRequestStatusActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([reservationRequestId, createdAt, id])
+  @@index([actorId])
+  @@map("reservation_request_status_history")
 }
 
 model Reservation {

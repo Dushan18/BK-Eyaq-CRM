@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -13,8 +14,11 @@ import { RoleCode } from '../../generated/prisma/enums';
 import { AccessTokenGuard } from '../auth/guards/access-token.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import {
   CreateReservationRequestDto,
+  RejectReservationRequestDto,
   ReservationRequestQueryDto,
   UpdateReservationRequestDto,
   UpdateReservationRequestStatusDto,
@@ -48,15 +52,39 @@ export class ReservationRequestsController {
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateReservationRequestDto,
+    @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.service.update(id, dto);
+    return this.service.update(id, dto, actor);
   }
 
   @Patch(':id/status')
   updateStatus(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateReservationRequestStatusDto,
+    @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.service.updateStatus(id, dto);
+    return this.service.updateStatus(id, dto, actor);
+  }
+
+  // Manual approval by the owner or an administrator. Idempotent: 200 every time.
+  @Post(':id/approve')
+  @HttpCode(200)
+  @Roles(RoleCode.ADMIN, RoleCode.OWNER)
+  approve(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.approve(id, actor);
+  }
+
+  @Post(':id/reject')
+  @HttpCode(200)
+  @Roles(RoleCode.ADMIN, RoleCode.OWNER)
+  reject(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: RejectReservationRequestDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.reject(id, dto, actor);
   }
 }

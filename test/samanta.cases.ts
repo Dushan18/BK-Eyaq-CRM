@@ -9,9 +9,16 @@ import { SamantaConfig } from '../src/samanta/samanta.config';
 import {
   type DraftOutput,
   type GenerationMode,
+  type ReservationAction,
   SamantaProviderError,
 } from '../src/samanta/samanta.provider';
 import { SamantaAutoService } from '../src/samanta/samanta-auto.service';
+import {
+  replies,
+  SamantaReservationService,
+} from '../src/samanta/samanta-reservations';
+import { MessagingTransactionService } from '../src/messaging/messaging-transaction.service';
+import { zonedTimeToUtc } from '../src/common/zoned-time';
 import { MessagesService } from '../src/messaging/messages.service';
 import { MessageProcessorService } from '../src/messaging/message-processor.service';
 import { OutboundMessagesService } from '../src/messaging/outbound-messages.service';
@@ -918,6 +925,421 @@ export function registerSamantaTests(c: Context) {
         });
         expect(await conversation(row)).toMatchObject({
           assistantPauseReason: 'SAMANTA_HANDOFF',
+        });
+      });
+
+      describe('M8.2: solicitudes registradas por Samanta', () => {
+        // A date a week ahead, as the customer would say it in Lima.
+        const local = (() => {
+          const parts = Object.fromEntries(
+            new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'America/Lima',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            })
+              .formatToParts(new Date(Date.now() + 7 * 86400000))
+              .map((part) => [part.type, part.value]),
+          );
+          return `${parts.year}-${parts.month}-${parts.day}`;
+        })();
+        const at = zonedTimeToUtc(
+          {
+            year: +local.slice(0, 4),
+            month: +local.slice(5, 7),
+            day: +local.slice(8, 10),
+            hour: 19,
+            minute: 30,
+          },
+          'America/Lima',
+        )!;
+        const reservation = (
+          extra: Partial<ReservationAction> = {},
+        ): ReservationAction => ({
+          action: 'PROPOSE',
+          language: 'es',
+          date: local,
+          time: '19:30',
+          people: 4,
+          service: null,
+          specialRequirements: 'Mesa junto a la ventana',
+          ...extra,
+        });
+        const answer = (
+          extra: Partial<ReservationAction> = {},
+          more: Partial<DraftOutput> = {},
+        ) =>
+          samantaTestProvider.generate.mockResolvedValueOnce({
+            ...reply,
+            intent: 'RESERVATION',
+            content: 'Texto del modelo que no debe llegar al cliente.',
+            reservation: reservation(extra),
+            ...more,
+          });
+        const requests = (row: Said) =>
+          db().reservationRequest.findMany({
+            where: { conversationId: row.conversationId },
+          });
+        const lastSent = async (row: Said) => {
+          const messages = await db().message.findMany({
+            where: {
+              conversationId: row.conversationId,
+              direction: 'OUTBOUND',
+            },
+            orderBy: { sequence: 'desc' },
+            take: 1,
+          });
+          return messages[0];
+        };
+        // The channel delivered the summary: only then can the customer confirm it.
+        const delivered = async (row: Said) =>
+          db().message.update({
+            where: { id: (await lastSent(row)).id },
+            data: {
+              status: 'DELIVERED',
+              sentAt: new Date(),
+              deliveredAt: new Date(),
+            },
+          });
+        const proposed = async () => {
+          answer();
+          const row = await say(
+            undefined,
+            'Quiero reservar para 4 el sábado a las 19:30',
+          );
+          await due(row);
+          await delivered(row);
+          return row;
+        };
+
+        it('datos completos sin confirmación: envía un resumen fijo y no crea la solicitud', async () => {
+          const row = await proposed();
+          const [draft] = await drafts(row);
+          expect(draft).toMatchObject({
+            status: 'APPROVED',
+            reservationOutcome: 'PROPOSED',
+            originalContent: 'Texto del modelo que no debe llegar al cliente.',
+            reservationProposal: {
+              date: local,
+              time: '19:30',
+              people: 4,
+              commercialItemId: null,
+              specialRequirements: 'Mesa junto a la ventana',
+              language: 'es',
+            },
+            reservationRequestId: null,
+          });
+          const summary = await lastSent(row);
+          expect(summary.content).toContain('¿Registro la solicitud');
+          expect(summary.content).toContain('• Personas: 4');
+          expect(summary.content).not.toContain('Texto del modelo');
+          expect(await requests(row)).toHaveLength(0);
+          expect(await conversation(row)).toMatchObject({
+            isAssistantPaused: false,
+          });
+          // The next turn tells the model what is awaiting confirmation.
+          answer({ action: 'NONE' });
+          await say(row.phone, '¿Tienen estacionamiento?');
+          await due(row);
+          const [context] = samantaTestProvider.generate.mock.calls.at(-1)!;
+          expect(
+            (
+              JSON.parse(context) as {
+                customer: { awaitingConfirmation: unknown };
+              }
+            ).customer.awaitingConfirmation,
+          ).toMatchObject({ date: local, time: '19:30', people: 4 });
+        });
+
+        it('confirmación explícita: crea la solicitud del cliente existente, vinculada a la conversación, sin transferir', async () => {
+          const row = await proposed();
+          const customers = await db().customer.count();
+          const { customerId } = await conversation(row);
+          answer({ action: 'CONFIRM', date: null, time: null, people: null });
+          const yes = await say(row.phone, 'Sí, regístrala por favor');
+          await due(row);
+          const [request] = await requests(row);
+          expect(request).toMatchObject({
+            customerId,
+            conversationId: row.conversationId,
+            sourceChannel: 'WHATSAPP',
+            status: 'READY_TO_SEND',
+            numberOfPeople: 4,
+            reservationAt: at,
+            specialRequirements: 'Mesa junto a la ventana',
+            commercialItemId: null,
+          });
+          expect(request.comments).toMatch(/^CRM: registrada por Samanta/);
+          expect(await db().customer.count()).toBe(customers);
+          expect(
+            await db().customer.findUniqueOrThrow({
+              where: { id: customerId },
+            }),
+          ).toMatchObject({ status: 'REQUESTED_RESERVATION' });
+          // Created with its final status: the history only records later changes.
+          expect(
+            await db().reservationRequestStatusHistory.count({
+              where: { reservationRequestId: request.id },
+            }),
+          ).toBe(0);
+          const [summaryDraft, confirmDraft] = await drafts(row).then((all) =>
+            all.filter((draft) => draft.reservationOutcome),
+          );
+          expect(summaryDraft.reservationRequestId).toBe(request.id);
+          expect(confirmDraft).toMatchObject({
+            sourceMessageId: yes.messageId,
+            reservationOutcome: 'CREATED',
+            requiresHuman: false,
+          });
+          const registered = await lastSent(row);
+          expect(registered.content).toContain(request.code);
+          expect(registered.content).toContain('pendiente de aprobación');
+          expect(registered.content).not.toMatch(/confirmada/i);
+          expect(await conversation(row)).toMatchObject({
+            isAssistantPaused: false,
+          });
+          // No reservation enters the calendar.
+          expect(
+            await db().reservation.count({
+              where: { reservationRequestId: request.id },
+            }),
+          ).toBe(0);
+        });
+
+        it('mensaje duplicado y «sí» repetido: una sola solicitud', async () => {
+          const row = await proposed();
+          answer({ action: 'CONFIRM' });
+          const yes = await say(row.phone, 'Sí, confirmo esos datos');
+          await due(row);
+          // The same message processed again schedules nothing.
+          await expect(
+            c.app().get(MessageProcessorService).process(yes.messageId),
+          ).resolves.toBe('terminal');
+          await delivered(row);
+          answer({ action: 'CONFIRM' });
+          await say(row.phone, 'Sí');
+          await due(row);
+          const all = await requests(row);
+          expect(all).toHaveLength(1);
+          expect((await lastSent(row)).content).toContain(all[0].code);
+          expect((await drafts(row)).at(-1)).toMatchObject({
+            reservationOutcome: 'ALREADY_REGISTERED',
+          });
+        });
+
+        it('procesamiento concurrente de la misma confirmación: una sola solicitud', async () => {
+          const row = await proposed();
+          const yes = await say(row.phone, 'Sí, regístrala');
+          const source = await db().message.findUniqueOrThrow({
+            where: { id: yes.messageId },
+          });
+          const confirm = () =>
+            c
+              .app()
+              .get(MessagingTransactionService)
+              .run((tx) =>
+                c
+                  .app()
+                  .get(SamantaReservationService)
+                  .confirm(
+                    tx,
+                    row.conversationId,
+                    source.sequence,
+                    'es',
+                    new Date(),
+                  ),
+              );
+          const results = await Promise.allSettled([confirm(), confirm()]);
+          const codes = results.map((result) =>
+            result.status === 'fulfilled' ? result.value.code : 'CONFLICT',
+          );
+          expect(codes.filter((code) => code === 'CREATED')).toHaveLength(1);
+          expect(await requests(row)).toHaveLength(1);
+        });
+
+        it('un «sí» sin resumen previo no crea nada y pasa a una persona', async () => {
+          answer({ action: 'CONFIRM' });
+          const row = await say(undefined, 'Sí');
+          await due(row);
+          expect(await requests(row)).toHaveLength(0);
+          expect((await drafts(row))[0]).toMatchObject({
+            reservationOutcome: 'NO_PROPOSAL',
+            requiresHuman: true,
+          });
+          expect(await conversation(row)).toMatchObject({
+            isAssistantPaused: true,
+            assistantPauseReason: 'SAMANTA_HANDOFF',
+          });
+        });
+
+        it.each([
+          [{ date: '2020-01-01' }, 'PAST_DATE', 'ya pasaron'],
+          [
+            { service: 'Servicio que no existe' },
+            'UNKNOWN_SERVICE',
+            'No encontré',
+          ],
+          [{ people: null }, 'MISSING_DATA', 'el número de personas'],
+        ] as const)(
+          'datos %j: %s, sin resumen, sin solicitud y sin transferir',
+          async (extra, outcome, text) => {
+            answer(extra);
+            const row = await say(undefined, 'Quiero reservar');
+            await due(row);
+            expect((await drafts(row))[0]).toMatchObject({
+              reservationOutcome: outcome,
+              reservationProposal: null,
+            });
+            expect((await lastSent(row)).content).toContain(text);
+            expect(await requests(row)).toHaveLength(0);
+            expect(await conversation(row)).toMatchObject({
+              isAssistantPaused: false,
+            });
+          },
+        );
+
+        it('un caso para una persona prevalece sobre la confirmación', async () => {
+          const row = await proposed();
+          answer(
+            { action: 'CONFIRM' },
+            {
+              intent: 'HUMAN',
+              requiresHuman: true,
+              content: 'Te comunico con una persona del equipo.',
+            },
+          );
+          await say(row.phone, 'Sí, pero uno de nosotros es alérgico al maní');
+          await due(row);
+          expect(await requests(row)).toHaveLength(0);
+          expect((await lastSent(row)).content).toBe(
+            'Te comunico con una persona del equipo.',
+          );
+          expect(await conversation(row)).toMatchObject({
+            isAssistantPaused: true,
+            assistantPauseReason: 'SAMANTA_HANDOFF',
+          });
+        });
+
+        it('en modo sombra no registra nada', async () => {
+          const row = await proposed();
+          jest.replaceProperty(samantaTestConfig, 'autoSend', false);
+          answer({ action: 'CONFIRM' });
+          await say(row.phone, 'Sí, regístrala');
+          await due(row);
+          expect(await requests(row)).toHaveLength(0);
+          expect((await drafts(row)).at(-1)).toMatchObject({
+            status: 'READY',
+            reservationOutcome: null,
+          });
+        });
+
+        describe('content vacío de OpenAI en PROPOSE y CONFIRM', () => {
+          const empty = { content: '' };
+          // Every message Samanta queued in the conversation has text.
+          const noEmptyMessages = async (row: Said) => {
+            for (const message of await sent(row))
+              expect(message.content?.trim()).toBeTruthy();
+          };
+
+          it('PROPOSE vacío con datos válidos: envía el resumen fijo', async () => {
+            answer({}, empty);
+            const row = await say(undefined, 'Para 4 el viernes a las 19:30');
+            await due(row);
+            expect((await drafts(row))[0]).toMatchObject({
+              status: 'APPROVED',
+              reservationOutcome: 'PROPOSED',
+              originalContent: '',
+            });
+            expect((await lastSent(row)).content).toContain(
+              '¿Registro la solicitud',
+            );
+            await noEmptyMessages(row);
+          });
+
+          it('CONFIRM vacío tras un resumen: registra la solicitud y responde el texto fijo', async () => {
+            const row = await proposed();
+            answer({ action: 'CONFIRM' }, empty);
+            await say(row.phone, 'Sí, regístrala');
+            await due(row);
+            const [request] = await requests(row);
+            expect(request).toMatchObject({
+              status: 'READY_TO_SEND',
+              conversationId: row.conversationId,
+            });
+            const registered = (await lastSent(row)).content!;
+            expect(registered).toContain(request.code);
+            expect(registered).toContain('pendiente de aprobación');
+            expect(registered).not.toMatch(/confirmada/i);
+            await noEmptyMessages(row);
+          });
+
+          it('CONFIRM vacío sin resumen previo: no registra y pasa a una persona con texto', async () => {
+            answer({ action: 'CONFIRM' }, empty);
+            const row = await say(undefined, 'Sí');
+            await due(row);
+            expect(await requests(row)).toHaveLength(0);
+            expect((await drafts(row))[0]).toMatchObject({
+              reservationOutcome: 'NO_PROPOSAL',
+            });
+            expect((await lastSent(row)).content).toBe(replies.es.noProposal);
+            expect(await conversation(row)).toMatchObject({
+              assistantPauseReason: 'SAMANTA_HANDOFF',
+            });
+          });
+
+          it('requiresHuman con content vacío: envía el aviso de respaldo y transfiere', async () => {
+            answer(
+              { action: 'CONFIRM' },
+              { ...empty, intent: 'HUMAN', requiresHuman: true },
+            );
+            const row = await say(
+              undefined,
+              'Sí, pero quiero hablar con alguien',
+            );
+            await due(row);
+            expect(await requests(row)).toHaveLength(0);
+            expect((await lastSent(row)).content).toBe(replies.es.emptyHandOff);
+            expect((await drafts(row))[0]).toMatchObject({
+              content: replies.es.emptyHandOff,
+              originalContent: '',
+              reservationOutcome: null,
+            });
+            expect(await conversation(row)).toMatchObject({
+              assistantPauseReason: 'SAMANTA_HANDOFF',
+            });
+          });
+
+          it('modo sombra: el borrador queda READY con texto de respaldo, nunca vacío', async () => {
+            jest.replaceProperty(samantaTestConfig, 'autoSend', false);
+            answer({}, empty);
+            const row = await say(undefined, 'Para 4 el viernes a las 19:30');
+            await due(row);
+            expect((await drafts(row))[0]).toMatchObject({
+              status: 'READY',
+              content: replies.es.emptyReply,
+              originalContent: '',
+              reservationOutcome: null,
+            });
+            expect(await sent(row)).toHaveLength(0);
+          });
+
+          it('dos CONFIRM vacíos seguidos: una sola solicitud', async () => {
+            const row = await proposed();
+            answer({ action: 'CONFIRM' }, empty);
+            await say(row.phone, 'Sí');
+            await due(row);
+            await delivered(row);
+            answer({ action: 'CONFIRM' }, empty);
+            await say(row.phone, 'Sí, sí');
+            await due(row);
+            const all = await requests(row);
+            expect(all).toHaveLength(1);
+            expect((await drafts(row)).at(-1)).toMatchObject({
+              reservationOutcome: 'ALREADY_REGISTERED',
+            });
+            expect((await lastSent(row)).content).toContain(all[0].code);
+            await noEmptyMessages(row);
+          });
         });
       });
     });

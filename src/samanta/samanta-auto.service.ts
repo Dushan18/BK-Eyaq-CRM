@@ -31,10 +31,15 @@ import {
 } from './samanta.provider';
 import {
   activeGeneration,
+  draftFields,
   handOff,
   latestActivity,
   utcDayStart,
 } from './samanta-drafts';
+import {
+  SamantaReservationService,
+  type ReservationOutcome,
+} from './samanta-reservations';
 
 interface Job {
   id: string;
@@ -61,6 +66,7 @@ export class SamantaAutoService
     private readonly outbound: OutboundMessagesService,
     private readonly bridge: AssistantBridge,
     private readonly env: ConfigService,
+    private readonly reservations: SamantaReservationService,
   ) {}
   get autoReplies() {
     return this.config.autoEnabled;
@@ -400,20 +406,58 @@ export class SamantaAutoService
       (await latestActivity(tx, conversationId)) > draft.baselineSequence
     )
       return update({ status: 'STALE' });
-    const content = { ...output, originalContent: output.content };
-    // Shadow mode: nothing reaches the customer; the team reviews the draft.
+    const content = {
+      ...draftFields(output),
+      originalContent: output.content,
+    };
+    // Shadow mode: nothing reaches the customer and no request is registered; the team
+    // reviews the draft.
     if (!this.config.autoSend) return update({ ...content, status: 'READY' });
+    // A reservation summary or confirmation: the backend validates it and its fixed
+    // text replaces the model's. A case for a person always wins over it.
+    const action = output.reservation;
+    let outcome: ReservationOutcome | undefined;
+    if (!output.requiresHuman && action && action.action !== 'NONE')
+      outcome =
+        action.action === 'PROPOSE'
+          ? await this.reservations.propose(
+              tx,
+              conversationId,
+              action,
+              new Date(),
+            )
+          : await this.reservations.confirm(
+              tx,
+              conversationId,
+              draft.baselineSequence,
+              action.language,
+              new Date(),
+            );
+    const reply = outcome
+      ? {
+          ...content,
+          content: outcome.content,
+          requiresHuman: outcome.handOff,
+          reservationOutcome: outcome.code,
+          ...(outcome.proposal
+            ? {
+                reservationProposal:
+                  outcome.proposal as unknown as Prisma.InputJsonObject,
+              }
+            : {}),
+        }
+      : content;
     try {
       const message = await this.outbound.queueOutboundMessage(
         conversationId,
         SAMANTA_USER_ID,
         `samanta-auto-${id}`,
-        { type: 'TEXT', content: output.content },
+        { type: 'TEXT', content: reply.content },
         tx,
       );
-      if (output.requiresHuman) await handOff(tx, conversationId);
+      if (reply.requiresHuman) await handOff(tx, conversationId);
       return update({
-        ...content,
+        ...reply,
         status: 'APPROVED',
         reviewedById: SAMANTA_USER_ID,
         reviewedAt: new Date(),
@@ -424,7 +468,7 @@ export class SamantaAutoService
       if (!(error instanceof HttpException)) throw error;
       await handOff(tx, conversationId);
       return update({
-        ...content,
+        ...reply,
         status: 'FAILED',
         errorCode: 'AUTO_SEND_REJECTED',
       });

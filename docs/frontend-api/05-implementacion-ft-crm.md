@@ -126,6 +126,8 @@ import type {
   ReservationListQuery,
   ReservationNote,
   ReservationRequest,
+  ReservationRequestApproval,
+  ReservationRequestDetail,
   ReservationRequestListQuery,
   ReservationStatusTarget,
   RestaurantConfig,
@@ -247,15 +249,29 @@ export const customersApi = {
 export const requestsApi = {
   list: (query: ReservationRequestListQuery) =>
     apiFetch<Paginated<ReservationRequest>>("/reservation-requests", { query }),
-  get: (id: string) => apiFetch<ReservationRequest>(`/reservation-requests/${id}`),
-  cancel: (id: string) =>
-    apiFetch<ReservationRequest>(`/reservation-requests/${id}/status`, { method: "PATCH", body: { status: "CANCELLED" } }),
+  /** Desde el 10/11 trae statusHistory (ReservationRequestDetail). */
+  get: (id: string) => apiFetch<ReservationRequestDetail>(`/reservation-requests/${id}`),
+  /** reason (10/11, opcional, 1–1000) queda en statusHistory. */
+  cancel: (id: string, reason?: string) =>
+    apiFetch<ReservationRequest>(`/reservation-requests/${id}/status`, {
+      method: "PATCH",
+      body: reason ? { status: "CANCELLED", reason } : { status: "CANCELLED" },
+    }),
   /** NUEVA · POST /reservation-requests (no es idempotente: un reintento crea otra solicitud). */
   create: (body: CreateReservationRequestBody) =>
     apiFetch<ReservationRequest>("/reservation-requests", { method: "POST", body }),
   /** NUEVA · PATCH /reservation-requests/:id (solo en INCOMPLETE_DATA o READY_TO_SEND). */
   update: (id: string, body: UpdateReservationRequestBody) =>
     apiFetch<ReservationRequest>(`/reservation-requests/${id}`, { method: "PATCH", body }),
+  /** NUEVA (10/11) · POST /reservation-requests/:id/approve (ADMIN, OWNER). Idempotente: devuelve la misma reserva. */
+  approve: (id: string) =>
+    apiFetch<ReservationRequestApproval>(`/reservation-requests/${id}/approve`, { method: "POST" }),
+  /** NUEVA (10/11) · POST /reservation-requests/:id/reject (ADMIN, OWNER). */
+  reject: (id: string, reason?: string) =>
+    apiFetch<ReservationRequest>(`/reservation-requests/${id}/reject`, {
+      method: "POST",
+      body: reason ? { reason } : {},
+    }),
 };
 
 // ---------------------------------------------------------------- reservas
@@ -510,6 +526,8 @@ export interface ReservationRequest {
   externalReference: string | null;
   customerId: Uuid;
   commercialItemId: Uuid | null;
+  /** Conversación vinculada (10/11), siempre del mismo cliente; null si no hay. */
+  conversationId: Uuid | null;
   sourceChannel: ContactChannel;
   /** null mientras faltan datos. */
   reservationAt: IsoDateTime | null;
@@ -525,6 +543,12 @@ export interface ReservationRequest {
   customer: CustomerSummary;
   commercialItem: CommercialItemSummary | null;
 }
+```
+
+```ts
+// src/lib/api/types.ts · añade a ReservationRequestListQuery (10/11)
+  /** Solicitudes vinculadas a esa conversación. */
+  conversationId?: Uuid;
 ```
 
 **Declaraciones nuevas.** Añádelas en la sección correspondiente de `types.ts`; el orden no importa para el compilador.
@@ -848,12 +872,54 @@ export const RESERVATION_REQUEST_EDITABLE_STATUSES: readonly ReservationRequestS
   "READY_TO_SEND",
 ];
 
+export const RESERVATION_REQUEST_ACTOR_TYPES = ["USER", "SAMANTA", "OWNER", "SYSTEM"] as const;
+/** Quién cambió el estado (10/11). Hoy solo se genera USER. */
+export type ReservationRequestActorType = (typeof RESERVATION_REQUEST_ACTOR_TYPES)[number];
+
+/** Un cambio de estado de la solicitud (previousStatus !== newStatus). */
+export interface ReservationRequestStatusEntry {
+  id: Uuid;
+  previousStatus: ReservationRequestStatus;
+  newStatus: ReservationRequestStatus;
+  actorType: ReservationRequestActorType;
+  /** null solo con actorType SYSTEM. */
+  actorId: Uuid | null;
+  reason: string | null;
+  createdAt: IsoDateTime;
+  actor: PublicUser | null;
+}
+
+/** GET /reservation-requests/:id (10/11). statusHistory: createdAt ascendente, sin paginar. */
+export interface ReservationRequestDetail extends ReservationRequest {
+  statusHistory: ReservationRequestStatusEntry[];
+  /** Reserva creada al aprobar (10/11), con su estado actual; null si no se aprobó. */
+  reservation: { id: Uuid; code: string; status: ReservationStatus; reservationAt: IsoDateTime } | null;
+  /** Mensaje de WhatsApp que pidió la aprobación al propietario (10/11); null si no se envió. */
+  ownerMessage: {
+    id: Uuid;
+    status: MessageStatus;
+    errorCode: string | null;
+    createdAt: IsoDateTime;
+    sentAt: IsoDateTime | null;
+    deliveredAt: IsoDateTime | null;
+    providerReadAt: IsoDateTime | null;
+  } | null;
+}
+
+/** POST /reservation-requests/:id/approve (10/11): la solicitud ACCEPTED y su reserva CONFIRMED. */
+export interface ReservationRequestApproval {
+  request: ReservationRequest;
+  reservation: Reservation;
+}
+
 /** Body de POST /reservation-requests. */
 export interface CreateReservationRequestBody {
   customerId: Uuid;
   sourceChannel: ContactChannel;
   /** Activo y APPROVED. */
   commercialItemId?: Uuid | null;
+  /** Conversación del mismo cliente (10/11). */
+  conversationId?: Uuid | null;
   /** Estrictamente futura. */
   reservationAt?: IsoDateTime | null;
   /** Entero >= 1 (número JSON, no texto). */
@@ -872,6 +938,8 @@ export interface UpdateReservationRequestBody {
   /** No admite null. */
   sourceChannel?: ContactChannel;
   commercialItemId?: Uuid | null;
+  /** Conversación del cliente de la solicitud (10/11); null desvincula. */
+  conversationId?: Uuid | null;
   /** Si llega, tiene que ser futura aunque no cambie. */
   reservationAt?: IsoDateTime | null;
   numberOfPeople?: number | null;
@@ -1068,6 +1136,32 @@ export interface EditSamantaDraftRequest extends ReviewSamantaDraftRequest {
 }
 
 /** Borrador de Samanta: fila completa que devuelven todas sus rutas. */
+export const SAMANTA_RESERVATION_OUTCOMES = [
+  "PROPOSED",
+  "CREATED",
+  "ALREADY_REGISTERED",
+  "MISSING_DATA",
+  "INVALID_DATE",
+  "PAST_DATE",
+  "INVALID_PEOPLE",
+  "UNKNOWN_SERVICE",
+  "NO_PROPOSAL",
+] as const;
+/** Qué hizo la acción de reserva de una respuesta automática (10/11). */
+export type SamantaReservationOutcome = (typeof SAMANTA_RESERVATION_OUTCOMES)[number];
+
+/** Datos validados del resumen que Samanta envió para que el cliente confirme (10/11). */
+export interface SamantaReservationProposal {
+  /** Fecha local del restaurante, AAAA-MM-DD. */
+  date: string;
+  /** Hora local, HH:MM (24 h). */
+  time: string;
+  people: number;
+  commercialItemId: Uuid | null;
+  service: string | null;
+  specialRequirements: string | null;
+  language: "es" | "en";
+}
 export interface SamantaDraft {
   id: Uuid;
   conversationId: Uuid;
@@ -1087,7 +1181,7 @@ export interface SamantaDraft {
   revision: number;
   /** Modelo de IA (SAMANTA_MODEL). */
   model: string;
-  /** Versión del prompt: "samanta-v3" desde el 9/11; antes, "samanta-v2" (8/11) o "samanta-drafts-v1". */
+  /** Versión del prompt: "samanta-v4" desde el 10/11; antes, "samanta-v3" (9/11), "samanta-v2" (8/11) o "samanta-drafts-v1". */
   promptVersion: string;
   /** SHA-256 (hex) de la información comercial usada. */
   knowledgeHash: string;
@@ -1112,6 +1206,12 @@ export interface SamantaDraft {
   reviewedAt: IsoDateTime | null;
   /** Mensaje OUTBOUND creado al aprobar. */
   outboundMessageId: Uuid | null;
+  /** Solo en automáticos con reservationOutcome PROPOSED: el resumen enviado (10/11). */
+  reservationProposal: SamantaReservationProposal | null;
+  /** En el borrador del resumen: la solicitud creada al confirmarlo (como mucho una). */
+  reservationRequestId: Uuid | null;
+  /** Solo en automáticos con acción de reserva; entonces content es el texto fijo del backend. */
+  reservationOutcome: SamantaReservationOutcome | null;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
 }
@@ -1201,7 +1301,7 @@ Qué guarda cada clave hoy y quién la usa:
 | `qk.customers(query)` | `["customers", "list", query]` | `Paginated<Customer>` | `ClientesView` |
 | `qk.customer(id)` | `["customers", "detail", id]` | `CustomerDetail` | Clientes (columna CONSULTÓ), panel de la Bandeja, detalle de reserva |
 | `qk.requests(query)` | `["reservation-requests", "list", query]` | Varía (ver abajo) | Solicitudes, Bandeja y su panel |
-| `qk.request(id)` · nueva | `["reservation-requests", "detail", id]` | `ReservationRequest` | Detalle o edición de solicitud |
+| `qk.request(id)` · nueva | `["reservation-requests", "detail", id]` | `ReservationRequestDetail` | Detalle o edición de solicitud |
 | `qk.reservations(query)` | `["reservations", "list", query]` | Varía (ver abajo) | Calendario, Clientes y panel de la Bandeja |
 | `qk.reservation(id)` | `["reservations", "detail", id]` | `ReservationDetail` | Detalle del Calendario |
 | `qk.conversations(query)` | `["conversations", "list", query]` | `Paginated<Conversation>`; el contador de no leídos guarda `{ messages, partial }` | Bandeja |
@@ -1241,7 +1341,9 @@ Qué hacer en la caché tras cada mutación. «Mezcla» significa `setQueryData(
 | `customersApi.setStatus` | Mezcla en `qk.customer(id)` | `qk.customersAll` |
 | `customersApi.addInterest`, `removeInterest` | — | `qk.customersAll` |
 | `requestsApi.create` | — | `qk.requestsAll`, `qk.statsAll` |
-| `requestsApi.update`, `cancel` | `setQueryData(qk.request(id))` | `qk.requestsAll`, `qk.statsAll` |
+| `requestsApi.update`, `cancel` | — (la respuesta no trae `statusHistory`: no la guardes en `qk.request(id)`) | `qk.requestsAll` (incluye `qk.request(id)`), `qk.statsAll` |
+| `requestsApi.approve` (10/11) | — | `qk.requestsAll`, `qk.reservationsAll`, `qk.statsAll` |
+| `requestsApi.reject` (10/11) | — | `qk.requestsAll`, `qk.statsAll` |
 | `reservationsApi.create` | — | `qk.reservationsAll`, `qk.statsAll` |
 | `reservationsApi.update`, `setStatus`, `reschedule` | Mezcla en `qk.reservation(id)` | `qk.reservationsAll`, `qk.statsAll` |
 | `reservationsApi.assign` | Mezcla en `qk.reservation(id)` | `qk.reservationsAll` |
@@ -1709,10 +1811,12 @@ export function storeReservationNote(queryClient: QueryClient, note: Reservation
 | Abrir el chat | `GET /conversations?customerId=…&channel=…&limit=1` y, si no hay, sin `channel` | `conversationsApi.list` (`useOpenChat`) | existe | Sin caché |
 | Detalle | `GET /reservation-requests/:id` | `requestsApi.get` | existe, sin pantalla | `qk.request(id)` (nueva) |
 | Nueva solicitud | `POST /reservation-requests` | `requestsApi.create` | nueva | Invalida `qk.requestsAll` y `qk.statsAll` |
-| Editar | `PATCH /reservation-requests/:id` | `requestsApi.update` | nueva | `setQueryData(qk.request(id))`; invalida `qk.requestsAll` y `qk.statsAll` |
+| Editar | `PATCH /reservation-requests/:id` | `requestsApi.update` | nueva | Invalida `qk.requestsAll` (incluye `qk.request(id)`, que vuelve con su `statusHistory`) y `qk.statsAll` |
 | Cancelar | `PATCH /reservation-requests/:id/status` | `requestsApi.cancel` | existe, sin pantalla | Igual que editar |
+| Aprobar (10/11) | `POST /reservation-requests/:id/approve` | `requestsApi.approve` | nueva | Invalida `qk.requestsAll`, `qk.reservationsAll` y `qk.statsAll` |
+| Rechazar (10/11) | `POST /reservation-requests/:id/reject` | `requestsApi.reject` | nueva | Invalida `qk.requestsAll` y `qk.statsAll` |
 
-**Permisos.** Ven ADMIN, OWNER y OPERATOR. Crean, editan y cancelan ADMIN y OPERATOR: `can("request.cancel")` ya existe; añade `request.edit`.
+**Permisos.** Ven ADMIN, OWNER y OPERATOR. Crean, editan y cancelan ADMIN y OPERATOR: `can("request.cancel")` ya existe; añade `request.edit`. Aprueban y rechazan ADMIN y OWNER (desde el 10/11): añade `request.approve` con esos dos roles. Muestra «Aprobar» en `READY_TO_SEND` y «Rechazar» en `INCOMPLETE_DATA` o `READY_TO_SEND`, con confirmación (no se deshacen).
 
 **Cambios para live:**
 - **Flujo del dueño.** Con las rutas actuales solo se alcanzan `INCOMPLETE_DATA` y `READY_TO_SEND` (los calcula el backend según haya fecha y personas) y `CANCELLED`. Las pestañas Esperando, Aceptadas y Rechazadas, y sus tres KPI, siempre estarán en 0. Ocúltalos o márcalos como «Próximamente».
@@ -1776,6 +1880,7 @@ export function storeReservationNote(queryClient: QueryClient, note: Reservation
   - email de hasta 254 caracteres en la práctica;
   - `logoUrl` y `website` con `http(s)` y un dominio o una IP;
   - `whatsappNumber` en E.164 (`E164_PATTERN`);
+  - `ownerWhatsappNumber` (10/11), WhatsApp personal del propietario, en E.164 y distinto de `whatsappNumber`. Agrégalo a `RestaurantConfig` (`string | null`) y a `PutRestaurantConfigRequest` (`ownerWhatsappNumber?: string | null`). Si `toPutRequest()` no lo envía, el backend conserva el guardado; envía `null` solo para borrarlo;
   - `timeZone` IANA;
   - de 1 a 3 idiomas.
 - **Coordenadas.** Una distinta de 0 con valor absoluto menor que 0,000001 que JavaScript escribe sin punto decimal (`1e-7`) provoca un 500; con punto (`1.5e-7`) pasa. `normalizeCoordinate` ya lo evita: redondea a 7 decimales y deja en 0 esos valores.
