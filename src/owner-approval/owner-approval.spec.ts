@@ -6,8 +6,10 @@ import { PutRestaurantConfigDto } from '../dto/put-restaurant-config.dto';
 import { OwnerApprovalConfig } from './owner-approval.config';
 import {
   ownerTemplate,
+  ownerTextMessage,
   type OwnerTemplateSource,
 } from './owner-approval.service';
+import { readOwnerReply } from './owner-replies.service';
 
 jest.mock('../database/prisma.service', () => ({
   PrismaService: class PrismaService {},
@@ -189,4 +191,78 @@ describe('M9.1: ownerWhatsappNumber en PUT /restaurant-config', () => {
       expect(await errorsOf(value)).not.toEqual([]);
     },
   );
+});
+
+describe('M9.1 temporal: solicitud por texto (OWNER_APPROVAL_TEXT_FALLBACK_ENABLED)', () => {
+  const config = (values: Record<string, string>) =>
+    new OwnerApprovalConfig({
+      get: (key: string) => values[key],
+    } as unknown as ConfigService);
+  it('apagado por defecto; solo admite true o false', () => {
+    expect(config({}).textFallback).toBe(false);
+    expect(
+      config({ OWNER_APPROVAL_TEXT_FALLBACK_ENABLED: 'true' }).textFallback,
+    ).toBe(true);
+    expect(() =>
+      config({ OWNER_APPROVAL_TEXT_FALLBACK_ENABLED: 'si' }),
+    ).toThrow('OWNER_APPROVAL_TEXT_FALLBACK_ENABLED debe ser true o false');
+  });
+  it('lleva código, cliente, fecha, hora, personas y las tres respuestas exactas', () => {
+    const text = ownerTextMessage(
+      source({
+        externalReference: 'SM-20261110-9E49B1',
+        sourceChannel: 'WEBSITE',
+        comments: 'Es un cumpleaños\nCRM: nota interna',
+      }),
+      'America/Lima',
+    );
+    expect(text.split('\n')).toEqual([
+      'Nueva solicitud de reserva RES-2026-000010',
+      'Cliente: Lucía Rojas (+51 987 654 321)',
+      'Fecha: viernes 20/11/2026',
+      'Hora: 19:30',
+      'Personas: 4',
+      'Servicio: Menú degustación',
+      'Observaciones: Mesa junto a la ventana · Es un cumpleaños',
+      'Origen: Página web (SM-20261110-9E49B1)',
+      '',
+      'Responde a este mensaje con ACEPTO, RECHAZO o CAMBIO (mantén pulsado el mensaje y elige «Responder»).',
+      'Con CAMBIO, escribe después en otro mensaje la nueva fecha, hora o personas.',
+      'Si no puedes usar «Responder», escribe ACEPTAR RES-2026-000010, RECHAZAR RES-2026-000010 o CAMBIO RES-2026-000010.',
+    ]);
+    expect(text).not.toContain('CRM:');
+    expect(text.length).toBeLessThanOrEqual(4096);
+  });
+  it('sin servicio ni observaciones omite esas líneas', () => {
+    const text = ownerTextMessage(
+      source({ commercialItem: null, specialRequirements: null }),
+      'America/Lima',
+    );
+    expect(text).not.toContain('Servicio:');
+    expect(text).not.toContain('Observaciones:');
+  });
+  it('cada respuesta que propone el texto la entiende M9.2 tal cual', () => {
+    const text = ownerTextMessage(source(), 'America/Lima');
+    // With «Responder»: the short word alone (the request comes from context.id).
+    expect(
+      ['ACEPTO', 'RECHAZO', 'CAMBIO'].map((word) =>
+        readOwnerReply(word, false),
+      ),
+    ).toEqual([
+      { intents: ['ACCEPT'], codes: [] },
+      { intents: ['REJECT'], codes: [] },
+      { intents: ['PROPOSE'], codes: [] },
+    ]);
+    // Without it: each decision with its code, exactly as the text writes it.
+    const coded = [
+      ...text.matchAll(/(ACEPTAR|RECHAZAR|CAMBIO) RES-\d{4}-\d{6}/g),
+    ].map(([answer]) => answer);
+    expect(coded.map((answer) => readOwnerReply(answer, false))).toEqual([
+      { intents: ['ACCEPT'], codes: ['RES-2026-000010'] },
+      { intents: ['REJECT'], codes: ['RES-2026-000010'] },
+      { intents: ['PROPOSE'], codes: ['RES-2026-000010'] },
+    ]);
+    // The whole text, if the owner forwarded it back, names several decisions: ambiguous.
+    expect(readOwnerReply(text, false).intents.length).toBeGreaterThan(1);
+  });
 });

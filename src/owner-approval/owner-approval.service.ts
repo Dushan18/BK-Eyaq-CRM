@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
   type OnModuleDestroy,
@@ -119,6 +120,32 @@ export function ownerTemplate(request: OwnerTemplateSource, timeZone: string) {
   return { parameters, content };
 }
 
+// TEMPORARY text version of the request (OWNER_APPROVAL_TEXT_FALLBACK_ENABLED), with the
+// same data as the template and the answers M9.2 reads without a template button: a
+// short decision sent with WhatsApp's «Responder» on this message (its context.id is
+// this message), or the decision with the request's code.
+export function ownerTextMessage(
+  request: OwnerTemplateSource,
+  timeZone: string,
+) {
+  const [code, client, date, time, people, service, observations, origin] =
+    ownerTemplate(request, timeZone).parameters;
+  return [
+    `Nueva solicitud de reserva ${code}`,
+    `Cliente: ${client}`,
+    `Fecha: ${date}`,
+    `Hora: ${time}`,
+    `Personas: ${people}`,
+    ...(service !== '-' ? [`Servicio: ${service}`] : []),
+    ...(observations !== '-' ? [`Observaciones: ${observations}`] : []),
+    `Origen: ${origin}`,
+    '',
+    'Responde a este mensaje con ACEPTO, RECHAZO o CAMBIO (mantén pulsado el mensaje y elige «Responder»).',
+    'Con CAMBIO, escribe después en otro mensaje la nueva fecha, hora o personas.',
+    `Si no puedes usar «Responder», escribe ACEPTAR ${code}, RECHAZAR ${code} o CAMBIO ${code}.`,
+  ].join('\n');
+}
+
 // M9.1: sends each new READY_TO_SEND request from Samanta or the website to the owner's
 // WhatsApp (a template, through the regular outbox and its retries) and follows the
 // message: SENT_TO_OWNER when queued, WAITING_RESPONSE once WhatsApp accepted it. The
@@ -147,6 +174,13 @@ export class OwnerApprovalService implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
+    this.logger.log(
+      JSON.stringify({
+        code: 'OWNER_APPROVAL_MODE',
+        mode: this.config.textFallback ? 'TEXT_FALLBACK' : 'TEMPLATE',
+        ...(this.config.textFallback ? {} : { template: this.config.template }),
+      }),
+    );
     this.timer = setInterval(() => this.tick(), this.config.pollSeconds * 1000);
     this.timer.unref();
     this.first = setTimeout(() => this.tick(), 5000);
@@ -208,7 +242,17 @@ export class OwnerApprovalService implements OnModuleInit, OnModuleDestroy {
     for (const { id } of due) {
       if ((this.retryAt.get(id) ?? 0) > Date.now()) continue;
       try {
-        if (await this.notify(id)) sent += 1;
+        const result = await this.notify(id);
+        // Text fallback with the owner's window closed: nothing is sent or marked; every
+        // request waits for the owner to write, and goes out on the next pass after that.
+        if (result === 'WINDOW_CLOSED') {
+          this.warnOnce('OWNER_APPROVAL_WINDOW_CLOSED');
+          break;
+        }
+        if (result === 'SENT') {
+          sent += 1;
+          this.warned.delete('OWNER_APPROVAL_WINDOW_CLOSED');
+        }
         this.retryAt.delete(id);
       } catch (error) {
         this.retryAt.set(id, Date.now() + RETRY_MS);
@@ -242,10 +286,11 @@ export class OwnerApprovalService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  // One request: the template is queued and the request moves to SENT_TO_OWNER in the
-  // same transaction, with the request row locked. The message's idempotency key and the
-  // unique ownerMessageId keep it to one notification, also with two instances running.
-  private notify(id: string) {
+  // One request: the template (or, temporarily, the text) is queued and the request moves
+  // to SENT_TO_OWNER in the same transaction, with the request row locked. The message's
+  // idempotency key and the unique ownerMessageId keep it to one notification, also with
+  // two instances running.
+  private notify(id: string): Promise<'SENT' | 'SKIPPED' | 'WINDOW_CLOSED'> {
     return this.transactions.run(async (tx) => {
       await tx.$queryRaw`SELECT id FROM reservation_requests WHERE id = ${id} FOR UPDATE`;
       const now = new Date();
@@ -270,36 +315,62 @@ export class OwnerApprovalService implements OnModuleInit, OnModuleDestroy {
           commercialItem: { select: { nameEs: true, nameEn: true } },
         },
       });
-      if (!request?.reservationAt || !request.numberOfPeople) return false;
+      if (!request?.reservationAt || !request.numberOfPeople) return 'SKIPPED';
       const restaurant = await tx.restaurantConfig.findUnique({
         where: { scope: 'GLOBAL' },
         select: { ownerWhatsappNumber: true, timeZone: true },
       });
-      if (!restaurant?.ownerWhatsappNumber) return false;
+      if (!restaurant?.ownerWhatsappNumber) return 'SKIPPED';
       const conversationId = await this.ownerConversation(
         tx,
         restaurant.ownerWhatsappNumber,
       );
-      const { parameters, content } = ownerTemplate(
-        {
-          ...request,
-          reservationAt: request.reservationAt,
-          numberOfPeople: request.numberOfPeople,
-        },
-        restaurant.timeZone,
-      );
-      const message = await this.outbound.queueTemplateMessage(
-        conversationId,
-        SAMANTA_USER_ID,
-        `owner-approval-${id}`,
-        {
-          name: this.config.template,
-          language: this.config.language,
-          parameters,
-          content,
-        },
-        tx,
-      );
+      const source = {
+        ...request,
+        reservationAt: request.reservationAt,
+        numberOfPeople: request.numberOfPeople,
+      };
+      const key = `owner-approval-${id}`;
+      let message: { id: string };
+      if (this.config.textFallback) {
+        // Free text only inside the owner's 24-hour window. Checked first (reads only, so
+        // the transaction stays usable): with it closed, nothing is queued or marked.
+        try {
+          await this.outbound.assertCanReply(tx, conversationId);
+        } catch (error) {
+          if (error instanceof ConflictException) return 'WINDOW_CLOSED';
+          throw error;
+        }
+        // The same outbox, key and checks as any reply: the window is checked again
+        // when queued, and the worker never sends it after the window closed.
+        message = await this.outbound.queueOutboundMessage(
+          conversationId,
+          SAMANTA_USER_ID,
+          key,
+          {
+            type: 'TEXT',
+            content: ownerTextMessage(source, restaurant.timeZone),
+          },
+          tx,
+        );
+      } else {
+        const { parameters, content } = ownerTemplate(
+          source,
+          restaurant.timeZone,
+        );
+        message = await this.outbound.queueTemplateMessage(
+          conversationId,
+          SAMANTA_USER_ID,
+          key,
+          {
+            name: this.config.template,
+            language: this.config.language,
+            parameters,
+            content,
+          },
+          tx,
+        );
+      }
       await tx.reservationRequest.update({
         where: { id },
         data: { status: 'SENT_TO_OWNER', ownerMessageId: message.id },
@@ -309,16 +380,19 @@ export class OwnerApprovalService implements OnModuleInit, OnModuleDestroy {
         previousStatus: 'READY_TO_SEND',
         newStatus: 'SENT_TO_OWNER',
         actor: { type: 'SYSTEM' },
-        reason: 'Enviada al WhatsApp del propietario para su aprobación.',
+        reason: this.config.textFallback
+          ? 'Enviada al WhatsApp del propietario para su aprobación (texto temporal, sin plantilla).'
+          : 'Enviada al WhatsApp del propietario para su aprobación.',
       });
       this.logger.log(
         JSON.stringify({
           code: 'OWNER_APPROVAL_QUEUED',
           reservationRequestId: id,
           messageId: message.id,
+          mode: this.config.textFallback ? 'TEXT_FALLBACK' : 'TEMPLATE',
         }),
       );
-      return true;
+      return 'SENT';
     }, true);
   }
 

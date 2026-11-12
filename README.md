@@ -783,6 +783,10 @@ OWNER_APPROVAL_TEMPLATE=aprobacion_reserva_propietario
 OWNER_APPROVAL_TEMPLATE_LANGUAGE=es
 OWNER_APPROVAL_MAX_AGE_HOURS=24
 OWNER_APPROVAL_POLL_SECONDS=15
+# TEMPORAL, mientras Meta revisa la plantilla: la solicitud sale como texto, solo con la
+# ventana de 24 h del propietario abierta (él escribió hace menos de 24 h). Con el texto
+# encendido la plantilla no se usa; apágalo cuando Meta la apruebe.
+OWNER_APPROVAL_TEXT_FALLBACK_ENABLED=false
 # M9.3: plantillas de aviso al cliente con la ventana de 24 h cerrada (apagadas por defecto)
 CUSTOMER_DECISION_TEMPLATES_ENABLED=false
 CUSTOMER_DECISION_TEMPLATE_ACCEPTED=reserva_aprobada

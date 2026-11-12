@@ -21,6 +21,11 @@ export class OwnerApprovalConfig {
   // Older requests are never sent: e.g. the ones that existed before turning this on.
   readonly maxAgeHours: number;
   readonly pollSeconds: number;
+  // TEMPORARY, while Meta reviews the template: the request goes to the owner as a plain
+  // WhatsApp text, and only while the owner's 24-hour window is open (the owner wrote in
+  // the last 24 h). With it on, the template is never used; turn it off once the template
+  // is approved.
+  readonly textFallback: boolean;
   readonly decisionTemplatesEnabled: boolean;
   readonly decisionTemplates: Record<CustomerDecision, string>;
   readonly decisionTemplateLanguage: string;
@@ -37,6 +42,11 @@ export class OwnerApprovalConfig {
     this.pollSeconds = this.enabled
       ? envInteger(config, 'OWNER_APPROVAL_POLL_SECONDS', 15, 5, 300)
       : 15;
+    this.textFallback = envFlag(
+      config,
+      'OWNER_APPROVAL_TEXT_FALLBACK_ENABLED',
+      false,
+    );
     this.decisionTemplatesEnabled = envFlag(
       config,
       'CUSTOMER_DECISION_TEMPLATES_ENABLED',

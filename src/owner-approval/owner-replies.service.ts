@@ -43,11 +43,28 @@ const BUTTONS: Record<string, OwnerIntent> = {
   RECHAZAR: 'REJECT',
   'PROPONER CAMBIO': 'PROPOSE',
 };
+// The short forms (ACEPTO, RECHAZO, CAMBIO) are decisions only right before a code: in a
+// sentence they are just words ("acepto si es a las 9", "cambio a las 21:00").
+const BEFORE_CODE = '(?= RES-\\d{4}-\\d{6,}\\b)';
 const KEYWORDS: [RegExp, OwnerIntent][] = [
-  [/\bACEPTAR\b/, 'ACCEPT'],
-  [/\bRECHAZAR\b/, 'REJECT'],
-  [/\bPROPONER CAMBIO\b|\bMODIFICAR\b/, 'PROPOSE'],
+  [new RegExp(`\\bACEPTAR\\b|\\bACEPTO${BEFORE_CODE}`), 'ACCEPT'],
+  [new RegExp(`\\bRECHAZAR\\b|\\bRECHAZO${BEFORE_CODE}`), 'REJECT'],
+  [
+    new RegExp(`\\bPROPONER CAMBIO\\b|\\bMODIFICAR\\b|\\bCAMBIO${BEFORE_CODE}`),
+    'PROPOSE',
+  ],
 ];
+// …or as the whole message, the way the owner answers with WhatsApp's «Responder» on the
+// request ("Acepto", "¡Rechazo!", "cambio."). M9.2 only acts on them with that reference.
+const SHORT: Record<string, OwnerIntent> = {
+  ACEPTO: 'ACCEPT',
+  ACEPTAR: 'ACCEPT',
+  RECHAZO: 'REJECT',
+  RECHAZAR: 'REJECT',
+  CAMBIO: 'PROPOSE',
+  'PROPONER CAMBIO': 'PROPOSE',
+  MODIFICAR: 'PROPOSE',
+};
 const CODE = /\bRES-\d{4}-\d{6,}\b/g;
 const normalize = (text: string) =>
   text
@@ -58,16 +75,19 @@ const normalize = (text: string) =>
     .trim();
 
 // What an answer says, without deciding anything: a button is its exact label; typed
-// text may name decisions and request codes anywhere.
+// text may name decisions and request codes anywhere, or be just a short decision.
 export function readOwnerReply(content: string, button: boolean) {
   const text = normalize(content);
+  const bare = text.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
   const intents: OwnerIntent[] = button
     ? BUTTONS[text]
       ? [BUTTONS[text]]
       : []
-    : KEYWORDS.filter(([pattern]) => pattern.test(text)).map(
-        ([, intent]) => intent,
-      );
+    : SHORT[bare]
+      ? [SHORT[bare]]
+      : KEYWORDS.filter(([pattern]) => pattern.test(text)).map(
+          ([, intent]) => intent,
+        );
   const codes = [...new Set(text.match(CODE) ?? [])];
   return { intents, codes };
 }
@@ -100,7 +120,11 @@ export const ownerTexts = {
   notApplied: (code: string, reason: string) =>
     `No se aplicó tu respuesta a la solicitud ${code}: ${reason}. El equipo la revisará en el CRM.`,
   needCode:
-    'No pude identificar la solicitud. Responde con los botones del mensaje de la solicitud, o escribe ACEPTAR, RECHAZAR o PROPONER CAMBIO junto con su código (por ejemplo, RES-2026-000043).',
+    'No pude identificar la solicitud. Mantén pulsado el mensaje de la solicitud, elige «Responder» y escribe ACEPTO, RECHAZO o CAMBIO. También puedes escribir la decisión con su código (por ejemplo, ACEPTAR RES-2026-000043).',
+  // A reply to a message that is not a request sent to this owner (an answer of the
+  // backend, an old text, a customer's message...).
+  notARequest:
+    'El mensaje al que respondiste no es una solicitud de reserva pendiente. Mantén pulsado el mensaje de la solicitud, elige «Responder» y escribe ACEPTO, RECHAZO o CAMBIO.',
   unknownCode: (code: string) =>
     `No encontré una solicitud enviada a ti con el código ${code}. Revisa el código o responde con los botones del mensaje de la solicitud.`,
   ambiguous:
@@ -265,13 +289,16 @@ export class OwnerReplyService
       return { outcome: 'AMBIGUOUS', reply: ownerTexts.ambiguous };
     const intent = intents[0];
     if (intent) {
-      // A button carries the message it answers; typed text must name the code.
-      const target = message.isButtonReply ? quoted : coded;
+      // A button carries the message it answers. Typed text names the code or answers
+      // (WhatsApp «Responder», context.id) the exact message of a request sent to this
+      // owner in this conversation. Without either, nothing is decided.
+      const target = message.isButtonReply ? quoted : (coded ?? quoted);
       if (!target)
-        return {
-          outcome: message.isButtonReply ? 'UNKNOWN_REQUEST' : 'AMBIGUOUS',
-          reply: ownerTexts.needCode,
-        };
+        return message.isButtonReply
+          ? { outcome: 'UNKNOWN_REQUEST', reply: ownerTexts.needCode }
+          : message.replyToExternalMessageId
+            ? { outcome: 'UNKNOWN_REQUEST', reply: ownerTexts.notARequest }
+            : { outcome: 'AMBIGUOUS', reply: ownerTexts.needCode };
       if (!ownerUserId)
         return {
           outcome: 'NOT_CONFIGURED',

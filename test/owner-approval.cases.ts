@@ -71,6 +71,11 @@ export function registerOwnerApprovalTests(c: Context) {
       ).id;
       // Earlier suites (email, Samanta) leave website and Samanta requests behind: they
       // are notified now, in batches, so that each test below only sees its own requests.
+      jest.replaceProperty(
+        c.app().get(OwnerApprovalConfig),
+        'textFallback',
+        false,
+      );
       jest
         .spyOn(adapter(), 'sendTemplate')
         .mockRejectedValue(new ChannelSendError('retry', 60000));
@@ -78,6 +83,15 @@ export function registerOwnerApprovalTests(c: Context) {
         if (!(await service().dispatch())) break;
       await settle();
       jest.restoreAllMocks();
+    });
+    // The developer's .env may have the temporary text mode on: these tests use the
+    // template unless a test turns the text mode on itself.
+    beforeEach(() => {
+      jest.replaceProperty(
+        c.app().get(OwnerApprovalConfig),
+        'textFallback',
+        false,
+      );
     });
     // Owner messages (and M9.3 customer notices) still queued are closed, so that the background outbox worker
     // never sends them through the real adapter once the spy is restored.
@@ -710,6 +724,433 @@ export function registerOwnerApprovalTests(c: Context) {
         expect(await reservationsOf(id)).toHaveLength(
           final === 'ACCEPTED' ? 1 : 0,
         );
+      });
+
+      describe('M9.1 temporal: solicitud por texto mientras Meta revisa la plantilla', () => {
+        const config = () => c.app().get(OwnerApprovalConfig);
+        const key = (id: string) => `owner-approval-${id}`;
+        // The owner's last message is older than 24 h: the window is closed.
+        const closeOwnerWindow = () =>
+          db().message.updateMany({
+            where: { direction: 'INBOUND', recipientPhone: OWNER_NUMBER },
+            data: { occurredAt: new Date(Date.now() - 25 * 3600 * 1000) },
+          });
+        // Any message from the owner opens it ("Hola" decides nothing).
+        const openOwnerWindow = async () =>
+          expect((await ownerSays('Hola')).ownerReplyOutcome).toBe('NO_ACTION');
+        // WhatsApp takes every text (the owner's request and the answers to the owner).
+        const whatsappTakesTexts = () =>
+          jest
+            .spyOn(adapter(), 'sendMessage')
+            .mockImplementation(() =>
+              Promise.resolve(`wamid.text-${randomUUID()}`),
+            );
+        // A request sent as text, already WAITING_RESPONSE.
+        const waitingText = async () => {
+          whatsappTakesTexts();
+          await openOwnerWindow();
+          const id = await webRequest();
+          await service().dispatch();
+          const { ownerMessageId } = await stored(id);
+          await deliver(ownerMessageId!);
+          await service().reconcile();
+          const row = await stored(id);
+          expect(row.status).toBe('WAITING_RESPONSE');
+          expect(row.ownerMessage!.templateName).toBeNull();
+          return { id, code: row.code };
+        };
+        beforeEach(() => {
+          jest.replaceProperty(config(), 'textFallback', true);
+        });
+
+        it('ventana cerrada: no envía texto ni plantilla y no marca nada; al escribir el propietario sale el texto', async () => {
+          const template = jest.spyOn(adapter(), 'sendTemplate');
+          await closeOwnerWindow();
+          const id = await webRequest();
+          await service().dispatch();
+          await service().dispatch();
+          let row = await stored(id);
+          expect(row).toMatchObject({
+            status: 'READY_TO_SEND',
+            ownerMessageId: null,
+          });
+          expect(row.statusHistory).toHaveLength(0);
+          expect(
+            await db().message.count({ where: { idempotencyKey: key(id) } }),
+          ).toBe(0);
+          expect(template).not.toHaveBeenCalled();
+          // The owner writes: the window opens and the request goes out as text.
+          await openOwnerWindow();
+          await service().dispatch();
+          row = await stored(id);
+          expect(row.status).toBe('SENT_TO_OWNER');
+          expect(row.ownerMessage).toMatchObject({
+            type: 'TEXT',
+            templateName: null,
+            idempotencyKey: key(id),
+            authorUserId: SAMANTA_USER_ID,
+            recipientPhone: OWNER_NUMBER,
+          });
+          const content = row.ownerMessage!.content!;
+          for (const line of [
+            `Nueva solicitud de reserva ${row.code}`,
+            'Cliente: Lucía Rojas',
+            'Personas: 4',
+            `ACEPTAR ${row.code}`,
+            `RECHAZAR ${row.code}`,
+            `CAMBIO ${row.code}`,
+          ])
+            expect(content).toContain(line);
+          expect(content).not.toContain('nota interna');
+          expect(row.statusHistory.at(-1)).toMatchObject({
+            newStatus: 'SENT_TO_OWNER',
+            actorType: 'SYSTEM',
+          });
+          expect(row.statusHistory.at(-1)!.reason).toContain('texto temporal');
+          expect(template).not.toHaveBeenCalled();
+        });
+
+        it('ACEPTAR RES-… escrito: decide sin botón, crea una reserva y avisa al cliente (M9.3)', async () => {
+          const { id, code } = await waitingText();
+          const reply = await ownerSays(`ACEPTAR ${code}`);
+          expect(reply.ownerReplyOutcome).toBe('ACCEPTED');
+          const row = await stored(id);
+          expect(row.status).toBe('ACCEPTED');
+          expect(await reservationsOf(id)).toHaveLength(1);
+          expect(row.statusHistory.at(-1)).toMatchObject({
+            newStatus: 'ACCEPTED',
+            actorType: 'OWNER',
+            actorId: ownerUserId,
+          });
+          // M9.3 ran: the customer was told, or the reason why not is on the request.
+          expect(
+            row.customerNoticeMessageId !== null ||
+              row.customerNoticeError !== null,
+          ).toBe(true);
+          const answer = (await answerTo(reply.id))!.content!;
+          expect(answer).toContain(code);
+          expect(answer).toMatch(/cliente/);
+        });
+
+        it('CAMBIO RES-… y luego los detalles: cambio propuesto y nota para el equipo', async () => {
+          const { id, code } = await waitingText();
+          expect((await ownerSays(`CAMBIO ${code}`)).ownerReplyOutcome).toBe(
+            'MODIFICATION_REQUESTED',
+          );
+          const details = await ownerSays('Cambio a las 21:00 para 6 personas');
+          expect(details.ownerReplyOutcome).toBe('DETAILS_ADDED');
+          const row = await stored(id);
+          expect(row.status).toBe('MODIFICATION_REQUESTED');
+          expect(row.comments).toContain('Cambio a las 21:00 para 6 personas');
+          expect(await reservationsOf(id)).toHaveLength(0);
+          await db().reservationRequest.update({
+            where: { id },
+            data: { updatedAt: new Date(Date.now() - 2 * 86400000) },
+          });
+        });
+
+        it('RECHAZAR repetido (webhook duplicado y segundo mensaje): una sola decisión', async () => {
+          const { id, code } = await waitingText();
+          const externalMessageId = `wamid.in-${randomUUID()}`;
+          const first = await ownerSays(`RECHAZAR ${code}`, {
+            externalMessageId,
+          });
+          const again = await ingest(`RECHAZAR ${code}`, { externalMessageId });
+          expect(again.duplicate).toBe(true);
+          const second = await ownerSays(`RECHAZAR ${code}`);
+          const late = await ownerSays(`ACEPTAR ${code}`);
+          expect(first.ownerReplyOutcome).toBe('REJECTED');
+          expect(second.ownerReplyOutcome).toBe('ALREADY_RESOLVED');
+          expect(late.ownerReplyOutcome).toBe('ALREADY_RESOLVED');
+          expect(await reservationsOf(id)).toHaveLength(0);
+          expect(
+            (await stored(id)).statusHistory.filter(
+              (entry) => entry.newStatus === 'REJECTED',
+            ),
+          ).toHaveLength(1);
+        });
+
+        it('envíos y respuestas concurrentes: un solo texto por solicitud y una sola decisión', async () => {
+          whatsappTakesTexts();
+          await openOwnerWindow();
+          const id = await webRequest();
+          await Promise.all([
+            service().dispatch(),
+            service().dispatch(),
+            service().dispatch(),
+          ]);
+          expect(
+            await db().message.count({ where: { idempotencyKey: key(id) } }),
+          ).toBe(1);
+          const { ownerMessageId, code } = await stored(id);
+          await deliver(ownerMessageId!);
+          await service().reconcile();
+          const [accept, reject] = await Promise.all([
+            ingest(`ACEPTAR ${code}`),
+            ingest(`RECHAZAR ${code}`),
+          ]);
+          const outcomes = (
+            await Promise.all([
+              processed(accept.message.id),
+              processed(reject.message.id),
+            ])
+          )
+            .map((m) => m.ownerReplyOutcome)
+            .sort();
+          const final = (await stored(id)).status;
+          expect(outcomes).toEqual(
+            final === 'ACCEPTED'
+              ? ['ACCEPTED', 'ALREADY_RESOLVED']
+              : ['ALREADY_RESOLVED', 'REJECTED'],
+          );
+          expect(await reservationsOf(id)).toHaveLength(
+            final === 'ACCEPTED' ? 1 : 0,
+          );
+        });
+
+        it('fallo de WhatsApp: el transitorio se reintenta; el definitivo vuelve a READY_TO_SEND sin reenviar', async () => {
+          await openOwnerWindow();
+          const send = jest
+            .spyOn(adapter(), 'sendMessage')
+            .mockRejectedValueOnce(new ChannelSendError('retry', 60000))
+            .mockRejectedValue(
+              new ChannelSendError('failed', 1000, {
+                httpStatus: 400,
+                metaCode: 131047,
+              }),
+            );
+          const id = await webRequest();
+          await service().dispatch();
+          const { ownerMessageId } = await stored(id);
+          // First attempt: transient, still queued and SENT_TO_OWNER.
+          await c.app().get(OutboundMessagesService).process(ownerMessageId!);
+          expect((await stored(id)).status).toBe('SENT_TO_OWNER');
+          await deliver(ownerMessageId!);
+          await service().reconcile();
+          const row = await stored(id);
+          expect(row.ownerMessage!.status).toBe('FAILED');
+          expect(row.status).toBe('READY_TO_SEND');
+          expect(row.statusHistory.at(-1)!.reason).toContain('No se reenvía');
+          const calls = send.mock.calls.length;
+          await service().dispatch();
+          expect(send.mock.calls.length).toBe(calls);
+          expect(
+            await db().message.count({ where: { idempotencyKey: key(id) } }),
+          ).toBe(1);
+        });
+
+        it('si la ventana se cierra con el texto en cola, el worker no lo envía', async () => {
+          await openOwnerWindow();
+          const send = jest
+            .spyOn(adapter(), 'sendMessage')
+            .mockRejectedValue(new ChannelSendError('retry', 60000));
+          const id = await webRequest();
+          await service().dispatch();
+          const { ownerMessageId } = await stored(id);
+          send.mockClear();
+          await closeOwnerWindow();
+          await deliver(ownerMessageId!);
+          expect(send).not.toHaveBeenCalled();
+          await service().reconcile();
+          const row = await stored(id);
+          expect(row.ownerMessage).toMatchObject({
+            status: 'FAILED',
+            errorCode: 'WHATSAPP_WINDOW_CLOSED',
+          });
+          expect(row.status).toBe('READY_TO_SEND');
+        });
+
+        it('con el texto temporal apagado vuelve la plantilla oficial, aunque la ventana esté cerrada', async () => {
+          jest.replaceProperty(config(), 'textFallback', false);
+          const template = jest
+            .spyOn(adapter(), 'sendTemplate')
+            .mockRejectedValue(new ChannelSendError('retry', 60000));
+          await closeOwnerWindow();
+          const id = await webRequest();
+          await service().dispatch();
+          const row = await stored(id);
+          expect(row.status).toBe('SENT_TO_OWNER');
+          expect(row.ownerMessage!.templateName).toBe(
+            'aprobacion_reserva_propietario',
+          );
+          await c
+            .app()
+            .get(OutboundMessagesService)
+            .process(row.ownerMessageId!);
+          expect(template).toHaveBeenCalledTimes(1);
+        });
+
+        describe('respuestas cortas con «Responder» (ACEPTO, RECHAZO, CAMBIO)', () => {
+          // The text request, its code and the wamid the owner quotes with «Responder».
+          const quotable = async () => {
+            const { id, code } = await waitingText();
+            const wamid = (await stored(id)).ownerMessage!.externalMessageId!;
+            expect(wamid).toMatch(/^wamid\.text-/);
+            return { id, code, wamid };
+          };
+
+          it('ACEPTO citando el mensaje de la solicitud: decide sin código, una reserva, historial OWNER y M9.3', async () => {
+            const { id, code, wamid } = await quotable();
+            const reply = await ownerSays('Acepto', { replyTo: wamid });
+            expect(reply.ownerReplyOutcome).toBe('ACCEPTED');
+            const row = await stored(id);
+            expect(row.status).toBe('ACCEPTED');
+            expect(await reservationsOf(id)).toHaveLength(1);
+            expect(row.statusHistory.at(-1)).toMatchObject({
+              newStatus: 'ACCEPTED',
+              actorType: 'OWNER',
+              actorId: ownerUserId,
+            });
+            expect(
+              row.customerNoticeMessageId !== null ||
+                row.customerNoticeError !== null,
+            ).toBe(true);
+            expect((await answerTo(reply.id))!.content).toContain(code);
+          });
+
+          it('RECHAZO y CAMBIO citados; los detalles posteriores quedan para el equipo', async () => {
+            const rejected = await quotable();
+            expect(
+              (await ownerSays('¡Rechazo!', { replyTo: rejected.wamid }))
+                .ownerReplyOutcome,
+            ).toBe('REJECTED');
+            expect((await stored(rejected.id)).status).toBe('REJECTED');
+            expect(await reservationsOf(rejected.id)).toHaveLength(0);
+
+            const changed = await quotable();
+            expect(
+              (await ownerSays('cambio', { replyTo: changed.wamid }))
+                .ownerReplyOutcome,
+            ).toBe('MODIFICATION_REQUESTED');
+            const details = await ownerSays('Mejor el sábado a las 20:00');
+            expect(details.ownerReplyOutcome).toBe('DETAILS_ADDED');
+            const row = await stored(changed.id);
+            expect(row.status).toBe('MODIFICATION_REQUESTED');
+            expect(row.comments).toContain('Mejor el sábado a las 20:00');
+            expect(row.statusHistory.at(-1)).toMatchObject({
+              newStatus: 'MODIFICATION_REQUESTED',
+              actorType: 'OWNER',
+            });
+            await db().reservationRequest.update({
+              where: { id: changed.id },
+              data: { updatedAt: new Date(Date.now() - 2 * 86400000) },
+            });
+          });
+
+          it('ACEPTO sin «Responder» no decide y explica cómo responder', async () => {
+            const { id } = await quotable();
+            const reply = await ownerSays('Acepto');
+            expect(reply.ownerReplyOutcome).toBe('AMBIGUOUS');
+            expect((await answerTo(reply.id))!.content).toContain(
+              '«Responder»',
+            );
+            expect((await stored(id)).status).toBe('WAITING_RESPONSE');
+            expect(await reservationsOf(id)).toHaveLength(0);
+          });
+
+          it('referencias inválidas: otro mensaje, un wamid desconocido, otro remitente o un código distinto no deciden', async () => {
+            const { id, code, wamid } = await quotable();
+            const other = await quotable();
+            // The owner's own message ("Hola") is not a request.
+            const hello = await ownerSays('Hola');
+            const quotedHello = await ownerSays('Acepto', {
+              replyTo: hello.externalMessageId!,
+            });
+            expect(quotedHello.ownerReplyOutcome).toBe('UNKNOWN_REQUEST');
+            expect((await answerTo(quotedHello.id))!.content).toContain(
+              'no es una solicitud',
+            );
+            expect(
+              (await ownerSays('Acepto', { replyTo: 'wamid.desconocido' }))
+                .ownerReplyOutcome,
+            ).toBe('UNKNOWN_REQUEST');
+            // Quoting one request with the code of another is ambiguous.
+            expect(
+              (await ownerSays(`ACEPTO ${other.code}`, { replyTo: wamid }))
+                .ownerReplyOutcome,
+            ).toBe('AMBIGUOUS');
+            // Someone else quoting the request (a forwarded message) is not the owner.
+            expect(
+              (
+                await ownerSays('Acepto', {
+                  replyTo: wamid,
+                  phone: `+5198${randomInt(1000000, 9999999)}`,
+                })
+              ).ownerReplyOutcome,
+            ).toBeNull();
+            for (const request of [id, other.id]) {
+              expect((await stored(request)).status).toBe('WAITING_RESPONSE');
+              expect(await reservationsOf(request)).toHaveLength(0);
+            }
+            // The same code and quote agree: that one decides.
+            expect(
+              (await ownerSays(`ACEPTAR ${code}`, { replyTo: wamid }))
+                .ownerReplyOutcome,
+            ).toBe('ACCEPTED');
+          });
+
+          it('un mensaje antiguo de una solicitud ya resuelta no decide otra vez', async () => {
+            const { id, wamid } = await quotable();
+            expect(
+              (await ownerSays('Rechazo', { replyTo: wamid }))
+                .ownerReplyOutcome,
+            ).toBe('REJECTED');
+            const late = await ownerSays('Acepto', { replyTo: wamid });
+            expect(late.ownerReplyOutcome).toBe('ALREADY_RESOLVED');
+            expect((await stored(id)).status).toBe('REJECTED');
+            expect(await reservationsOf(id)).toHaveLength(0);
+          });
+
+          it('webhook duplicado y respuestas citadas simultáneas: una sola decisión', async () => {
+            const first = await quotable();
+            const externalMessageId = `wamid.in-${randomUUID()}`;
+            expect(
+              (
+                await ownerSays('Acepto', {
+                  replyTo: first.wamid,
+                  externalMessageId,
+                })
+              ).ownerReplyOutcome,
+            ).toBe('ACCEPTED');
+            expect(
+              (
+                await ingest('Acepto', {
+                  replyTo: first.wamid,
+                  externalMessageId,
+                })
+              ).duplicate,
+            ).toBe(true);
+            expect(await reservationsOf(first.id)).toHaveLength(1);
+
+            const second = await quotable();
+            const [accept, reject] = await Promise.all([
+              ingest('Acepto', { replyTo: second.wamid }),
+              ingest('Rechazo', { replyTo: second.wamid }),
+            ]);
+            const outcomes = (
+              await Promise.all([
+                processed(accept.message.id),
+                processed(reject.message.id),
+              ])
+            )
+              .map((m) => m.ownerReplyOutcome)
+              .sort();
+            const final = (await stored(second.id)).status;
+            expect(outcomes).toEqual(
+              final === 'ACCEPTED'
+                ? ['ACCEPTED', 'ALREADY_RESOLVED']
+                : ['ALREADY_RESOLVED', 'REJECTED'],
+            );
+            expect(await reservationsOf(second.id)).toHaveLength(
+              final === 'ACCEPTED' ? 1 : 0,
+            );
+            expect(
+              (await stored(second.id)).statusHistory.filter(
+                (entry) => entry.actorType === 'OWNER',
+              ),
+            ).toHaveLength(1);
+          });
+        });
       });
 
       describe('M9.3: aviso al cliente de la decisión del propietario', () => {

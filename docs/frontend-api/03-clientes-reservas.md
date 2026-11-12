@@ -2746,6 +2746,14 @@ Las observaciones son `specialRequirements` y las líneas de `comments` que no e
 
 Cada solicitud se envía **una sola vez**: la base de datos admite un mensaje por solicitud. Una que volvió a `READY_TO_SEND` por un fallo no se reenvía sola; la decide una persona.
 
+**Modo temporal por texto** (desde el 11/11, `OWNER_APPROVAL_TEXT_FALLBACK_ENABLED=true`, apagado por defecto). Sirve mientras Meta revisa la plantilla.
+- La solicitud sale como un **texto normal** de WhatsApp, con los mismos datos. Termina pidiendo: «Responde a este mensaje con ACEPTO, RECHAZO o CAMBIO» (con la función «Responder» de WhatsApp) y, si no puede usarla, `ACEPTAR RES-…`, `RECHAZAR RES-…` o `CAMBIO RES-…`.
+- Solo se envía con la **ventana de 24 h del propietario abierta**, es decir, si él escribió en las últimas 24 h, aunque sea «Hola». Con la ventana cerrada no se envía nada y la solicitud sigue en `READY_TO_SEND` sin `ownerMessage`. Sale en la siguiente revisión después de que el propietario escriba, siempre que no tenga más de `OWNER_APPROVAL_MAX_AGE_HOURS`.
+- Usa el mismo outbox y la misma clave de idempotencia (`owner-approval-<id>`). Los estados (`SENT_TO_OWNER` y `WAITING_RESPONSE`) y el historial son los mismos; el motivo del historial dice «texto temporal». Si la ventana se cierra antes de que el worker lo envíe, el mensaje termina `FAILED` (`WHATSAPP_WINDOW_CLOSED`) y la solicitud vuelve a `READY_TO_SEND` sin reenviarse.
+- Las respuestas las procesa M9.2 (ver [Respuestas del propietario](#respuestas-del-propietario)): las cortas citando el mensaje, o la decisión con el código. `CAMBIO` equivale a «Proponer cambio». El aviso al cliente (M9.3) es el mismo.
+- Con el modo apagado se usa la plantilla oficial, como antes.
+
+
 **Qué mostrar.**
 - En el detalle, `ownerMessage` trae el estado del mensaje al propietario: `{ id, status, errorCode, createdAt, sentAt, deliveredAt, providerReadAt }`, o `null` si no se envió. Muestra «Enviada al propietario», «Entregada» o «Leída», o el error.
 - `SENT_TO_OWNER` y `WAITING_RESPONSE` no admiten `PATCH` ni cancelar (409 `La solicitud no admite modificaciones en su estado actual`). Sí admiten aprobar y rechazar.
@@ -2759,7 +2767,9 @@ Desde el 10/11 (M9.2). Cuando el propietario responde en su WhatsApp, el backend
 
 **A qué solicitud responde.** Solo a solicitudes que se le enviaron a él, en esa conversación:
 - **Botón** («Aceptar», «Rechazar» o «Proponer cambio»): la solicitud cuyo mensaje responde el botón (`context.id` de WhatsApp = el mensaje de la plantilla).
-- **Texto escrito:** necesita **el código** de la solicitud (`RES-…`) y una sola decisión: `ACEPTAR`, `RECHAZAR`, `PROPONER CAMBIO` o `MODIFICAR` (sin distinguir mayúsculas ni tildes). Un «Aceptar» escrito sin código **nunca** aprueba nada.
+- **Texto escrito con el código** (`RES-…`) y una sola decisión: `ACEPTAR`, `RECHAZAR`, `PROPONER CAMBIO` o `MODIFICAR`, en cualquier parte del mensaje, o `ACEPTO`, `RECHAZO` o `CAMBIO` justo antes del código (sin distinguir mayúsculas ni tildes).
+- **Respuesta corta citando el mensaje** (desde el 11/11): `ACEPTO`/`ACEPTAR`, `RECHAZO`/`RECHAZAR` o `CAMBIO` como mensaje completo (se toleran signos y emojis alrededor), enviada con la función **«Responder»** de WhatsApp sobre el mensaje exacto de la solicitud. La solicitud sale del `context.id` de WhatsApp, que debe ser el `ownerMessage` de una solicitud enviada a este propietario en esta conversación. Dentro de una frase («acepto si es a las 9», «cambio a las 21:00») esas palabras no deciden nada.
+- Un «Acepto» **sin citar** y sin código, o citando un mensaje que no es una solicitud (una respuesta del backend, su propio mensaje, un mensaje desconocido), **nunca** decide nada: recibe una aclaración de cómo usar «Responder». Si cita una solicitud y nombra el código de otra, es `AMBIGUOUS`.
 
 | Respuesta | Efecto | `ownerReplyOutcome` |
 |---|---|---|
@@ -2769,8 +2779,8 @@ Desde el 10/11 (M9.2). Cuando el propietario responde en su WhatsApp, el backend
 | Texto sin decisión tras «Proponer cambio» | Se agrega a `comments` de esa solicitud como `CRM: propuesta del propietario (dd/mm hh:mm): …` (hasta 500 caracteres). **No cambia** la fecha, las personas ni el servicio | `DETAILS_ADDED` |
 | Una decisión sobre una solicitud ya resuelta (aceptada, rechazada, cancelada o con un cambio propuesto) | Nada | `ALREADY_RESOLVED` |
 | La aprobación no procede (fecha pasada, servicio retirado…) | Nada | `NOT_APPLICABLE` |
-| Texto con una decisión pero sin código, varias decisiones o varios códigos | Nada | `AMBIGUOUS` |
-| Un código que no se le envió, o un botón de otro mensaje | Nada | `UNKNOWN_REQUEST` |
+| Texto con una decisión pero sin código ni cita, varias decisiones, varios códigos, o una cita y el código de otra solicitud | Nada; aclara cómo usar «Responder» | `AMBIGUOUS` |
+| Un código que no se le envió, un botón de otro mensaje, o una respuesta corta que cita un mensaje que no es una solicitud | Nada | `UNKNOWN_REQUEST` |
 | Falta `approvalResponsibleId` en la configuración | Nada | `NOT_CONFIGURED` |
 | Otro texto sin decisión ni propuesta pendiente | Nada, sin respuesta | `NO_ACTION` |
 | Audio, imagen u otro tipo | Nada, sin respuesta | `UNSUPPORTED` |

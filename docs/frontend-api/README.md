@@ -722,7 +722,7 @@ Todavía sin commit. Requiere la migración `20261113000000_owner_whatsapp_repli
    - Proponer cambio: `MODIFICATION_REQUESTED`. Su texto siguiente queda en `comments` como `CRM: propuesta del propietario…`, sin cambiar la fecha, las personas ni el servicio.
 
    El historial registra `actorType: "OWNER"` con el usuario `approvalResponsibleId`.
-2. **Seguridad.** Solo cuenta el teléfono que informa Meta igual a `ownerWhatsappNumber`, y solo sobre solicitudes que se le enviaron a él. Un botón vale por el mensaje que responde. Un texto necesita el código, y un «Aceptar» sin código no decide nada. Respuestas ambiguas, códigos desconocidos o solicitudes ya resueltas no cambian nada y reciben una aclaración.
+2. **Seguridad.** Solo cuenta el teléfono que informa Meta igual a `ownerWhatsappNumber`, y solo sobre solicitudes que se le enviaron a él. Un botón vale por el mensaje que responde. Un texto necesita el código o, desde el 11/11, citar con «Responder» el mensaje exacto de la solicitud (respuestas cortas `ACEPTO`, `RECHAZO` o `CAMBIO`); un «Acepto» sin código ni cita no decide nada. Respuestas ambiguas, códigos desconocidos o solicitudes ya resueltas no cambian nada y reciben una aclaración.
 3. **Idempotencia.** Los webhooks repetidos y las respuestas simultáneas aplican una sola decisión, y hay como mucho una reserva por solicitud.
 4. **Samanta** nunca contesta al propietario: sus mensajes se procesan antes que ella y su conversación se mantiene en pausa.
 5. **Lo visible:**
@@ -747,6 +747,8 @@ Todavía sin commit. Requiere la migración `20261112000000_owner_whatsapp_appro
 4. **Lecturas.**
    - El detalle de la solicitud trae `ownerMessage` (`{ id, status, errorCode, createdAt, sentAt, deliveredAt, providerReadAt }` o `null`).
    - En la Bandeja y en Clientes aparece el contacto «Propietario», con su conversación de WhatsApp y Samanta en pausa `MANUAL`. No le quites la pausa.
+
+5. **Modo temporal por texto (11/11).** Mientras Meta revisa la plantilla, el servidor puede enviar la solicitud como un texto de WhatsApp (`OWNER_APPROVAL_TEXT_FALLBACK_ENABLED=true`), solo si el propietario escribió en las últimas 24 h. Para el frontend no cambia nada: los estados, `ownerMessage` y el historial son los mismos. `ownerMessage` no trae el nombre de la plantilla y el motivo del historial dice «texto temporal». Con la ventana cerrada, la solicitud sigue en `READY_TO_SEND` sin `ownerMessage` hasta que el propietario escriba. El propietario responde con «Responder» sobre el mensaje y `ACEPTO`, `RECHAZO` o `CAMBIO`, o escribe `ACEPTAR RES-…`, `RECHAZAR RES-…` o `CAMBIO RES-…`.
 
 Detalle en [03 › Envío al WhatsApp del propietario](03-clientes-reservas.md#envío-al-whatsapp-del-propietario).
 

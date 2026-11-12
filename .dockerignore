@@ -1,3 +1,5 @@
+# Nada de esto entra en la imagen: dependencias y builds locales, pruebas, documentación y,
+# sobre todo, secretos y respaldos. La configuración llega por variables de entorno (Dokploy).
 node_modules
 dist
 generated
@@ -7,8 +9,32 @@ test
 test-results
 docs
 .git
+.github
+.vscode
+.idea
+.claude
+*.log
+compose.yaml
+
+# Secretos: solo entra la plantilla sin valores.
 .env
 .env.*
 !.env.example
-*.log
-compose.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+secrets
+secrets/**
+
+# Respaldos y volcados de base de datos (las migraciones de prisma/ sí entran).
+respaldos
+backups
+*.dump
+*.backup
+*.bak
+*.sql.gz
+*.tar
+*.tar.gz
+*.zip
